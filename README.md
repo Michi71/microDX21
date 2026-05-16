@@ -29,7 +29,7 @@ A real-time FM synthesizer emulator based on the **Nuked OPM** (YM2151/YM2164) c
 
 ```
 MIDI Input ──► SPSC Ring Buffer ──► processMidiBuffer() ──► writeReg/clockChip
-                   (256 events)          (audio thread)          │
+                   (256 events)          (audio thread)       │
                                                               ▼
                                                      Pending Audio Buffer
                                                       (16384 cycles, carried over)
@@ -127,7 +127,7 @@ make
 ### Run
 
 ```bash
-./opl3_standalone
+./opp_standalone
 ```
 
 ### Controls
