@@ -87,7 +87,7 @@ The YM2151 uses only 12 of 16 possible 4-bit note codes — values 3, 7, 11, 15 
 
 ```
 Nibble:  0    1    2    4    5    6    8    9   10   12   13   14
-Note:   C#   D   D#    E    F   F#   G   G#   A   A#    B    C
+Note:    C#   D    D#   E    F    F#   G    G#  A    A#   B    C
 ```
 
 C sits at the **top** of each chip octave (nibble 14), so the octave boundary falls between C and C#. This is handled by computing `octave = (note - 1) / 12 - 1`, which correctly maps MIDI 60 → KC 0x3E (C4), MIDI 69 → KC 0x4A (A4 = 440 Hz).
