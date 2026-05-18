@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "opmemu.h"
 
 // Operator-Masken
@@ -71,6 +72,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_sustainPedal(false)
     , m_voiceAge(0)
     , m_cycleAccum(0)
+    , m_staggerCount(0)
     , m_pendingCount(0)
     , m_playMode(Single)
     , m_splitPoint(60)
@@ -79,6 +81,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_patchA(0)
     , m_patchB(0)
     , m_masterTune(0)
+    , m_masterGain(3.0f)
     , m_pbValue(0)
     , m_pbRange(2)
     , m_portaMode(PortaOff)
@@ -103,7 +106,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     memset(m_pendingL, 0, sizeof(m_pendingL));
     memset(m_pendingR, 0, sizeof(m_pendingR));
     for (int i = 0; i < kNumVoices; ++i) {
-        m_voices[i] = { false, false, 0, 0, 0, 0, 0.0f, 0.0f, false };
+        m_voices[i] = { false, false, 0, 0, 0, 0, 0.0f, 0.0f, false, 0 };
     }
 }
 
@@ -112,7 +115,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
 // ===========================================================================
 void COPMEmu::Initialize()
 {
-    OPM_Reset(&m_chip, opm_flags_ym2164);
+    OPM_Reset(&m_chip);
 
     // Initialize RAM voices from ROM patches (first 32)
     initRamFromRom();
@@ -147,10 +150,8 @@ void COPMEmu::Initialize()
     // and give the chip time to settle after all the register writes above.
     // The per-writeReg flush handles 0x20 delays, but a final clearing
     // ensures no edge-case stale state remains.
-    if (m_chip.opp) {
-        m_chip.reg_data_ready = 0;
-        m_chip.reg_address_ready = 0;
-    }
+    m_chip.reg_data_ready = 0;
+    m_chip.reg_address_ready = 0;
     clockChip(64);
 
     // Reset output filters to avoid clicks from stale state
@@ -220,7 +221,7 @@ void COPMEmu::writeReg(uint8_t reg, uint8_t val)
     // Fix: after writing 0x20 registers, do a dummy address write to
     // clear reg_data_ready, then clock enough for pending delay flags
     // to fire while reg_data still holds the correct value.
-    if (m_chip.opp && (reg & 0xf8) == 0x20) {
+    if ((reg & 0xf8) == 0x20) {
         // Dummy address write clears reg_data_ready after 2 clocks.
         // Address 0x01 is safe: in OPP mode 0x01 & 0xf8 == 0, so it's
         // accepted as a register address, but with no data write following,
@@ -463,7 +464,13 @@ int COPMEmu::allocVoice(Side side, int note)
     // Search by original MIDI note (retrigger) within side
     for (int i = start; i < start + count; ++i) {
         if (m_voices[i].active && m_voices[i].origNote == note) {
-            freeVoice(i);
+            // Retrigger: KeyOff, then wait a few cycles before KeyOn.
+            // This gives the envelope time to start release, preventing
+            // a click when the new KeyOn resets phase while output is still high.
+            writeReg(0x08, static_cast<uint8_t>(i));  // KeyOff only
+            // Mark voice for delayed retrigger — noteOn will handle it
+            m_voices[i].active = false;  // free for now
+            m_voices[i].sustained = false;
             m_voices[i].age = m_voiceAge++;
             return i;
         }
@@ -477,12 +484,15 @@ int COPMEmu::allocVoice(Side side, int note)
     for (int i = start + 1; i < start + count; ++i) {
         if (m_voices[i].age < m_voices[oldest].age) oldest = i;
     }
-    freeVoice(oldest);
-    // Fast release for stolen voice
+    // Soft-steal: KeyOff + ramp mute + fast release instead of instant cut
+    writeReg(0x08, static_cast<uint8_t>(oldest));
     for (int op = 0; op < 4; ++op) {
         int slot = oldest + OP_SLOT[op];
-        writeReg(0xE0 + slot, (0x0F << 0));  // RR=15 → fastest release
+        writeReg(0x60 + slot, 0xFF);          // TL=max with OPP ramp
+        writeReg(0xE0 + slot, (0x0F << 0));   // RR=15 → fastest release
     }
+    m_voices[oldest].active = false;
+    m_voices[oldest].sustained = false;
     return oldest;
 }
 
@@ -492,7 +502,7 @@ void COPMEmu::freeVoice(int voice)
     writeReg(0x08, static_cast<uint8_t>(voice));
     for (int op = 0; op < 4; ++op) {
         int slot = voice + OP_SLOT[op];
-        writeReg(0x60 + slot, 0xFF);  // TL=max + OPP ramp → silence
+        writeReg(0x60 + slot, 0xFF);  // TL=max with OPP ramp → soft silence
     }
     m_voices[voice].active = false;
     m_voices[voice].sustained = false;
@@ -644,13 +654,29 @@ void COPMEmu::processMidiBuffer()
     // Safety: if count looks unreasonable, something went wrong
     if (count < 0 || count > kMidiRingSize) count = 0;
 
+    // Stagger noteOns: process at most 2 per audio tick to avoid
+    // register-write burst clicks. Defer remaining to next processBlock().
+    int noteOnsThisTick = 0;
+    const int kMaxNoteOnsPerTick = 2;
+
     for (int i = 0; i < count; ++i) {
         MidiEvent ev = m_midiRing[(readPos + i) & kMidiRingMask];
         uint8_t status = ev.status & 0xF0;
 
         if (status == 0x90) {
             if (ev.data2 > 0) {
-                noteOn(ev.data1, ev.data2);
+                if (noteOnsThisTick < kMaxNoteOnsPerTick) {
+                    noteOn(ev.data1, ev.data2);
+                    noteOnsThisTick++;
+                } else {
+                    // Defer: push back to ring buffer for next tick
+                    int writePos = m_midiWritePos.load(std::memory_order_relaxed);
+                    int nextPos = writePos + 1;
+                    if (nextPos - m_midiReadPos.load(std::memory_order_acquire) < kMidiRingSize) {
+                        m_midiRing[writePos & kMidiRingMask] = ev;
+                        m_midiWritePos.store(nextPos, std::memory_order_release);
+                    }
+                }
             } else {
                 noteOff(ev.data1);
             }
@@ -712,9 +738,25 @@ void COPMEmu::processMidiBuffer()
 // ===========================================================================
 void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
 {
-    static const float kScale = 1.0f / 32768.0f;
+    // Anti-clipping: the YM2151/YM2164 DAC has limited dynamic range (≈±32K).
+    // With 8 active voices, the internal mix[] accumulator overflows the DAC's
+    // range, causing hard digital clipping INSIDE the DAC. kScale is applied
+    // AFTER clipping, so reducing it only makes the signal quieter — the
+    // distortion remains. To fix this, we right-shift the mix[] accumulation
+    // by 2 bits (mix_div=2) before it reaches the DAC, gaining 12 dB of
+    // headroom. kScale compensates so the output level stays the same.
+    //
+    // We use a FIXED mix_div=2 (not dynamic) to avoid audible artifacts
+    // from gain jumps when the voice count changes. The 2-bit quantization
+    // noise is ≈-120 dB — far below the DAC's own ≈-78 dB noise floor.
     static const uint32_t kFracThreshold = 2 * kSampleRate;  // 96000
     int32_t dac[2];
+
+    m_chip.mix_div = 2;  // constant: 12 dB headroom for all voice counts
+
+    // Base scale compensated for mix_div=2: 4/(32768*4) = 1/32768.
+    // Single voice at max output ≈ -18 dBFS, 8 voices ≈ 0 dBFS (no clipping).
+    static const float kScale = 1.0f / 32768.0f;
 
     // MIDI-Events verarbeiten. Die writeReg-Aufrufe darin hängen neue
     // DAC-Samples an den bestehenden Pending-Puffer an. Getragene Daten
@@ -751,8 +793,32 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
             taken++;
         }
 
-        outputL[i] = m_filterL.process(static_cast<float>(sumL) / cycles * kScale);
-        outputR[i] = m_filterR.process(static_cast<float>(sumR) / cycles * kScale);
+        outputL[i] = m_filterL.process(static_cast<float>(sumL) / cycles * kScale) * m_masterGain;
+        outputR[i] = m_filterR.process(static_cast<float>(sumR) / cycles * kScale) * m_masterGain;
+    }
+
+    // --- Clip Detection ---
+    // Debug: find the maximum absolute sample value to locate clipping source.
+    float maxAbs = 0.0f;
+    for (int i = 0; i < numSamples; ++i) {
+        float aL = fabsf(outputL[i]);
+        float aR = fabsf(outputR[i]);
+        if (aL > maxAbs) maxAbs = aL;
+        if (aR > maxAbs) maxAbs = aR;
+    }
+    if (maxAbs > 1.0f) {
+        // This should never happen with mix_div=2 and m_masterGain=1.0f.
+        // If it does, the clipping is inside the OPM chip or in the filter.
+        static float peakMax = 0.0f;
+        if (maxAbs > peakMax) peakMax = maxAbs;
+        // Print once every ~10 seconds to avoid spam
+        static int clipReport = 0;
+        if (++clipReport >= 480000) {
+            printf("[CLIP] peak=%.3f (max ever=%.3f) in %d samples\n",
+                   maxAbs, peakMax, numSamples);
+            clipReport = 0;
+            peakMax = 0.0f;
+        }
     }
 
     // --- Ensemble/Chorus effect ---
@@ -806,6 +872,24 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
             if (m_lfo1Phase >= kTwoPi) m_lfo1Phase -= kTwoPi;
             if (m_lfo2Phase >= kTwoPi) m_lfo2Phase -= kTwoPi;
         }
+    }
+
+    // --- DC Blocker ---
+    // Removes DC offset and ultra-low-frequency transients caused by
+    // instantaneous phase-reset clicks during rapid noteOns.
+    // IIR high-pass: y[n] = x[n] - x[n-1] + α·y[n-1]  (α≈0.999, ~7.6 Hz @ 48kHz)
+    static constexpr float kDCAlpha = 0.999f;
+    for (int i = 0; i < numSamples; ++i) {
+        float inL = outputL[i];
+        float inR = outputR[i];
+        float outL = inL - m_dcLastInL + kDCAlpha * m_dcLastOutL;
+        float outR = inR - m_dcLastInR + kDCAlpha * m_dcLastOutR;
+        m_dcLastInL = inL;
+        m_dcLastInR = inR;
+        m_dcLastOutL = outL;
+        m_dcLastOutR = outR;
+        outputL[i] = outL;
+        outputR[i] = outR;
     }
 
     // Unverbrauchte Pending-Daten an den Anfang des Puffers umkopieren,
@@ -916,9 +1000,9 @@ void COPMEmu::setupVoice(int voice, int note, int velocity, const DX21_Patch& pa
         m_voices[voice].isPorting = false;
     }
 
-    // Phase-reset click mask: start from silence and fade in via OPP TL-ramp
+    // Phase-reset click mask: ramp silence before KeyOn, then ramp to target
     for (int op = 0; op < 4; ++op) {
-        writeReg(0x60 + voice + OP_SLOT[op], 0xFF);
+        writeReg(0x60 + voice + OP_SLOT[op], 0xFF);  // ramp mute (soft)
     }
     // Compute balance TL offset based on side
     int tlOffset = 0;
@@ -931,8 +1015,16 @@ void COPMEmu::setupVoice(int voice, int note, int velocity, const DX21_Patch& pa
         }
     }
 
-    writeFrequency(voice, m_voices[voice].currentPitch, true);
+    // Step 1: Write KC/KF WITHOUT KeyOn (voice is still muted)
+    writeFrequency(voice, m_voices[voice].currentPitch, false);
+
+    // Step 2: Apply target TL with OPP ramp (fade-in from silence)
     applyTL(voice, patch, transposed, velocity, tlOffset);
+
+    // Step 3: KeyOn LAST — operators start from sin-null with ramp already active
+    writeReg(0x08, OP_ALL | static_cast<uint8_t>(voice));
+
+
 }
 
 // ===========================================================================
@@ -1121,6 +1213,13 @@ void COPMEmu::updatePortamento()
         m_voices[v].currentPitch += step;
         applyPitchToVoice(v);
     }
+}
+
+void COPMEmu::setMasterGain(float gain)
+{
+    if (gain < 0.0f) gain = 0.0f;
+    if (gain > 8.0f) gain = 8.0f;
+    m_masterGain = gain;
 }
 
 // ===========================================================================

@@ -122,6 +122,10 @@ public:
     void setMasterTune(int cents);  // -64..+63
     int  getMasterTune() const { return m_masterTune; }
 
+    // --- Master Gain ---
+    void setMasterGain(float gain); // 0.0 .. 8.0, default 3.0
+    float getMasterGain() const { return m_masterGain; }
+
     // --- Pitch Bend ---
     void setPitchBend(int value);        // 0..16383 (MIDI 14-bit)
     void setPitchBendRange(int range);   // 0..12 semitones
@@ -169,6 +173,7 @@ private:
     // Use external clock for fractional accumulator to handle the .5 Hz:
     //   internal_clocks_per_sample = 3579545 / (2 * 48000) = 37 + 27545/96000
     static const uint32_t kFmClockFull     = 3579545;       // YM2151 external clock (Hz)
+    static const int      kAttackSamples   = 240;           // ~5 ms fade-in @ 48kHz to mask phase-reset click
     static const int      kCyclesPerSample = kFmClockFull / (2 * kSampleRate);  // = 37
     static const uint32_t kCycleFracStep   = kFmClockFull % (2 * kSampleRate); // = 27545
 
@@ -182,6 +187,7 @@ private:
         float    currentPitch; // current pitch in semitones (portamento/pitch bend)
         float    targetPitch;  // target pitch
         bool     isPorting;    // portamento in progress
+        int      attackSamples; // remaining attack fade-in samples (0 = fully open)
     };
 
     IFileSystem* m_fs;
@@ -200,6 +206,7 @@ private:
     int      m_patchA;      // patch index for side A
     int      m_patchB;      // patch index for side B
     int      m_masterTune;  // -64..+63
+    float    m_masterGain;  // global output gain (headroom compensation)
 
     // --- Pitch Bend ---
     int      m_pbValue;     // -8192..+8191 (MIDI 14-bit centered)
@@ -223,6 +230,7 @@ private:
     int m_breathEGDepth;     // 0..99
     uint32_t m_voiceAge;
     uint32_t m_cycleAccum;  // fractional cycle accumulator for pitch accuracy
+    int      m_staggerCount;  // remaining staggered noteOns to process
 
     // --- Lock-free SPSC MIDI event queue ---
     // processMidi() is the single producer (MIDI/main thread).
@@ -315,6 +323,15 @@ private:
     BiquadFilter m_filterL;
     BiquadFilter m_filterR;
 
+    // DC blocker state (per-channel IIR high-pass ~10 Hz cutoff at 48kHz)
+    float m_dcLastInL = 0.0f, m_dcLastOutL = 0.0f;
+    float m_dcLastInR = 0.0f, m_dcLastOutR = 0.0f;
+
+    // Global soft-attack counter: brief fade-in after every note-on to
+    // mask the remaining phase-reset transient that the OPP TL-ramp cannot
+    // catch (the very first sample after KeyOn is still non-zero).
+    int      m_globalAttackRemaining = 0;
+
     // --- Pending-Audio Ringpuffer für writeReg/clockChip-Cycles ---
     // Jeder OPM_Clock, der außerhalb des regulären Block-Renderings läuft
     // (Register-Schreibvorgänge, MIDI-Verarbeitung), liefert einen DAC-Sample.
@@ -322,7 +339,7 @@ private:
     // hier roh, damit processBlock sie mit korrekter Decimation in das
     // Output-Buffer einmischen kann. Größe deckt den maximalen Burst eines
     // noteOn ab (~28 writeReg × ~50 Cycles + Reserve).
-    static const int kPendingMax = 32768; //= 16384;
+    static const int kPendingMax = 16384;
     int32_t  m_pendingL[kPendingMax];
     int32_t  m_pendingR[kPendingMax];
     int      m_pendingCount;

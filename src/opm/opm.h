@@ -34,16 +34,10 @@
 extern "C" {
 #endif
 
-enum {
-    opm_flags_none = 0,
-    opm_flags_ym2164 = 1,   /* YM2164(OPP) */
-};
-
 typedef struct {
     uint32_t cycles;
     uint8_t ic;
     uint8_t ic2;
-    uint8_t opp;
     // IO
     uint8_t write_data;
     uint8_t write_a;
@@ -118,7 +112,6 @@ typedef struct {
     uint8_t eg_serial_bit;
     uint8_t eg_test;
     
-
     // Phase Gen
     uint16_t pg_fnum[32];
     uint8_t pg_kcode[32];
@@ -278,6 +271,10 @@ typedef struct {
     uint8_t dac_osh1, dac_osh2;
     uint16_t dac_bits;
     int32_t dac_output[2];
+    // Dynamic mix headroom: right-shift mix[] accumulation by this amount
+    // to prevent internal DAC clamping at high polyphony.
+    // 0 = no shift (original behavior), 1 = /2, 2 = /4
+    uint8_t mix_div;
 } opm_t;
 
 void OPM_Clock(opm_t *chip, int32_t *output, uint8_t *sh1, uint8_t *sh2, uint8_t *so);
@@ -287,7 +284,7 @@ uint8_t OPM_ReadIRQ(opm_t *chip);
 uint8_t OPM_ReadCT1(opm_t *chip);
 uint8_t OPM_ReadCT2(opm_t *chip);
 void OPM_SetIC(opm_t *chip, uint8_t ic);
-void OPM_Reset(opm_t *chip, uint32_t flags);
+void OPM_Reset(opm_t *chip);
 
 /* DX100/OPP-specific: per-slot attack-rate slowdown.  skip=0 disables (default).
  * skip=N causes every Nth attack inc=1 tick to be zeroed, lengthening attack

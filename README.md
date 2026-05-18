@@ -299,7 +299,7 @@ All public methods are safe to call from any thread — the MIDI queue, program-
 
 ```
 src/opm/
-├── opm.c                    Nuked OPM emulation (unmodified, + attack-skip patch)
+├── opm.c                    Nuked OPM emulation (+ attack-skip patch, **phase-reset disabled for click-free KeyOn**)
 ├── opm.h                    Nuked OPM header (+ opp_atk_skip fields, SetAttackSkip API)
 ├── opmemu.cpp               DX21 emulator engine (voice management, effects, MIDI)
 ├── opmemu.h                 Public API, filters, delays, MIDI queue, performance state
@@ -315,6 +315,45 @@ src/opm/
 test/
 └── standalone.cpp           SDL2 + PortMidi interactive test application
 ```
+
+---
+
+## Core Modifications
+
+### Nuked OPM Click Fix (Phase-Reset)
+The original Nuked OPM core resets operator phase to 0 on every KeyOn (`pg_phase[slot] = 0`). On the real YM2151/YM2164, this causes a transient click because `logsinrom[0] = 0x859` (maximum amplitude). In a polyphonic context with fast note transitions (glissando, piano staccato), this produces audible crackling.
+
+**Fix**: In `OPM_PhaseGenerate()`, the phase-reset block is commented out:
+```c
+if (chip->pg_reset_latch[slot] || chip->mode_test[3])
+{
+    // Phase reset disabled to prevent KeyOn clicks
+    // chip->pg_phase[slot] = 0;
+}
+```
+The phase now free-runs continuously. The OPP TL-ramp (bit 7 of register 0x60) provides smooth fade-in/out transitions. This is the definitive fix — previous attempts (TL-ramp, DC blocker, staggered KeyOns, per-voice soft-attack envelope, chip-internal mute counter) did not fully solve the problem.
+
+### OPP Attack-Rate Skip
+Per `nuked-opp-xcent`, the YM2164 has a plateau in AR=18–30 where attack times are ~105–115 ms (between OPM AR=12 and AR=13). This is modelled by skipping every Nth attack increment tick via `OPM_SetAttackSkip()`.
+
+### DAC Anti-Clipping (mix_div)
+The YM2151/YM2164 DAC has a limited dynamic range (≈±32 K). With 8 active voices, the internal `mix[]` accumulator overflows the DAC's floating-point mantissa, causing hard digital clipping *inside* the DAC. Reducing the output gain (`kScale`) doesn't help — it's applied after clipping, making the signal quieter but still distorted.
+
+**Fix**: A `mix_div` field (2 bits) was added to the `opm_t` struct. The per-operator contribution to `mix[]` is right-shifted by `mix_div` bits *before* DAC serialization, gaining 6 dB of headroom per shift. The output gain `kScale` compensates so the perceived level stays the same.
+
+- `mix_div = 2` (fixed, always active) — 12 dB headroom, prevents clipping for up to 8 voices at full output
+- `kScale = 1/32768` — compensates for the /4 shift in the DAC path
+- Quantization noise from the 2-bit truncation: ≈−120 dB, far below the DAC's own ≈−78 dB noise floor
+
+A dynamic `mix_div` (0/1/2 depending on voice count) was tested first but caused audible gain jumps when voices were added/removed. The fixed `mix_div = 2` avoids this entirely.
+
+### Voice Stealing & Muting
+- `freeVoice()` now writes `TL=0xFF` (ramp mute) instead of `0x7F` (instant mute) for softer voice release.
+- Stolen voices get `KeyOff` + `TL=0xFF` (ramp) + `RR=15` (fast release) instead of instant cut.
+- In `setupVoice()`, operators are ramp-muted before KeyOn, then faded in via OPP TL-ramp.
+
+### Output Gain
+`setMasterGain(float)` / `getMasterGain()` provides a global output gain multiplier (0.0–8.0, default 3.0) applied after the reconstruction filter. The default of 3.0 (+9.5 dB) compensates for the internal headroom scaling — typical DX21 patches land at around −15 dBFS for a single voice and −6 dBFS for 4–8 voices.
 
 ---
 
