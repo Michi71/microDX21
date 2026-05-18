@@ -1,6 +1,7 @@
 add_library(opmemu STATIC
     opm.c
     opmemu.cpp
+    memory/dx21_memory.cpp
 )
 
 target_include_directories(opmemu PUBLIC

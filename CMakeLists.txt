@@ -25,8 +25,8 @@ include_directories(${SDL2_INCLUDE_DIRS} ${PORTMIDI_INCLUDE_DIR})
 
 add_subdirectory(src/opm)
 
-add_executable(opp_standalone test/standalone.cpp)
+add_executable(standalone test/standalone.cpp)
 
-target_link_libraries(opp_standalone ${SDL2_LIBRARIES} ${PORTMIDI_LIBRARY} opmemu)
+target_link_libraries(standalone ${SDL2_LIBRARIES} ${PORTMIDI_LIBRARY} opmemu)
 
-target_include_directories(opp_standalone PRIVATE test)
+target_include_directories(standalone PRIVATE test)

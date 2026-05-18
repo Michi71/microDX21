@@ -2,6 +2,7 @@
 
 #include "opm.h"
 #include "patches.h"
+#include "memory/dx21_memory.h"
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -85,7 +86,7 @@ struct EnsembleDelayLine {
 class COPMEmu {
 
 public:
-    COPMEmu();
+    explicit COPMEmu(IFileSystem* fs = nullptr);
 
     void Initialize();
     void processBlock(float* outputL, float* outputR, int numSamples);
@@ -98,6 +99,68 @@ public:
     void setCurrentProgram(int index);
     void setEnsembleOn(bool on);
     bool getEnsembleOn();
+    // --- Play Modes (DX21 SINGLE / DUAL / SPLIT) ---
+    enum PlayMode { Single, Dual, Split };
+
+    void setPlayMode(PlayMode mode);
+    PlayMode getPlayMode() const { return m_playMode; }
+
+    void setSplitPoint(int note);   // MIDI note number (default 60 = C3)
+    int  getSplitPoint() const { return m_splitPoint; }
+
+    void setBalance(int balance);   // 0..99, 50 = center
+    int  getBalance() const { return m_balance; }
+
+    void setMono(bool mono);        // true = MONO, false = POLY
+    bool isMono() const { return m_mono; }
+
+    void setPatchA(int index);
+    void setPatchB(int index);
+    int  getPatchA() const { return m_patchA; }
+    int  getPatchB() const { return m_patchB; }
+
+    void setMasterTune(int cents);  // -64..+63
+    int  getMasterTune() const { return m_masterTune; }
+
+    // --- Pitch Bend ---
+    void setPitchBend(int value);        // 0..16383 (MIDI 14-bit)
+    void setPitchBendRange(int range);   // 0..12 semitones
+    int  getPitchBendRange() const { return m_pbRange; }
+
+    // --- Portamento ---
+    void setPortamentoMode(int mode);    // 0=Off, 1=FullTime, 2=Fingered
+    void setPortamentoRate(int rate);    // 0..99
+    int  getPortamentoMode() const { return (int)m_portaMode; }
+    int  getPortamentoRate() const { return m_portaRate; }
+
+    // --- DX21 Memory (RAM + Performance) ---
+    CDX21Memory& memory() { return m_memory; }
+    bool loadRamBank(const std::string& dirPath) { return m_memory.loadRamBank(dirPath); }
+    bool saveRamBank(const std::string& dirPath) { return m_memory.saveRamBank(dirPath); }
+    bool loadPerformanceBank(const std::string& filePath) { return m_memory.loadPerformanceBank(filePath); }
+    bool savePerformanceBank(const std::string& filePath) { return m_memory.savePerformanceBank(filePath); }
+    void initRamFromRom();
+
+    // Apply a performance to the engine state
+    void applyPerformance(int perfSlot);
+
+    // --- PB Mode ---
+    void setPBMode(int mode);            // 0=All, 1=Low, 2=High, 3=K-on
+    int  getPBMode() const { return (int)m_pbMode; }
+
+    // --- Breath Controller ---
+    void setBreathPitchBias(int value);  // 0..99
+    void setBreathAmplitude(int value);  // 0..99
+    void setBreathEGBias(int value);     // 0..99
+    void setBreathEGDepth(int value);    // 0..99
+    int  getBreathPitchBias() const { return m_breathPitchBias; }
+    int  getBreathAmplitude() const { return m_breathAmplitude; }
+    int  getBreathEGBias() const { return m_breathEGBias; }
+    int  getBreathEGDepth() const { return m_breathEGDepth; }
+
+    // --- SysEx Edit Voice ---
+    void setSysexEditVoice(int voice);   // 0..7, which voice slot receives parameter changes
+    int  getSysexEditVoice() const { return m_sysexEditVoice; }
 
 private:
     static const int      kNumVoices  = 8;
@@ -116,12 +179,48 @@ private:
         int      note;       // transposed note (for KC calculation)
         int      velocity;
         uint32_t age;
+        float    currentPitch; // current pitch in semitones (portamento/pitch bend)
+        float    targetPitch;  // target pitch
+        bool     isPorting;    // portamento in progress
     };
+
+    IFileSystem* m_fs;
+    CDX21Memory  m_memory;
 
     opm_t    m_chip;
     Voice    m_voices[kNumVoices];
-    int      m_currentPatch;
+    int      m_currentPatch;   // kept for backward compat; maps to m_patchA
     bool     m_sustainPedal;
+
+    // --- DX21 Performance State ---
+    PlayMode m_playMode;
+    int      m_splitPoint;    // MIDI note (default 60 = C3)
+    int      m_balance;     // 0..99, 50 = center
+    bool     m_mono;        // MONO mode
+    int      m_patchA;      // patch index for side A
+    int      m_patchB;      // patch index for side B
+    int      m_masterTune;  // -64..+63
+
+    // --- Pitch Bend ---
+    int      m_pbValue;     // -8192..+8191 (MIDI 14-bit centered)
+    int      m_pbRange;     // 0..12 semitones
+
+    // --- Portamento ---
+    enum PortaMode { PortaOff, PortaFullTime, PortaFingered };
+    PortaMode m_portaMode;
+    int       m_portaRate;  // 0..99
+    float     m_portaRateFactor; // derived from rate (0.0 .. 1.0)
+
+    // --- PB Mode (Low / High / K-on) ---
+    enum PBMode { PBAll, PBLow, PBHigh, PBKOn };
+    PBMode m_pbMode;
+
+    // --- Breath Controller ---
+    int m_breathValue;       // 0..127 (MIDI CC#2)
+    int m_breathPitchBias;   // 0..99
+    int m_breathAmplitude;   // 0..99
+    int m_breathEGBias;      // 0..99
+    int m_breathEGDepth;     // 0..99
     uint32_t m_voiceAge;
     uint32_t m_cycleAccum;  // fractional cycle accumulator for pitch accuracy
 
@@ -139,6 +238,20 @@ private:
     MidiEvent     m_midiRing[kMidiRingSize];
     std::atomic<int> m_midiWritePos{0};  // producer increments after write
     std::atomic<int> m_midiReadPos{0};   // consumer increments after read
+
+    // --- SysEx Real-Time Parameter Change ---
+    static constexpr int kSysexNumParams = 76;  // DX21 VCED size
+    uint8_t  m_sysexParam[kSysexNumParams];
+    bool     m_sysexDirty[kSysexNumParams];
+    int      m_sysexEditVoice;  // 0..7, which voice slot is being edited
+
+    void handleSysex(const uint8_t* data, int size);
+    void applySysexChanges();
+    void applySysexParam(int paramIndex, uint8_t value);
+
+    // VCED byte index → OPM register mapping helpers
+    void writeVcedGlobal(int param, uint8_t value);
+    void writeVcedOperator(int op, int param, uint8_t value);
 
     // --- Thread-safe program change ---
     // setCurrentProgram() stores the new program number here (main thread).
@@ -160,17 +273,34 @@ private:
     // Shadow-Register für writeField
     uint8_t  m_shadow[256];
 
+    // --- Pitch / Portamento ---
+    void applyPitchToVoice(int voice);         // write KC/KF with PB+porta+tune+breath
+    void updatePortamento();                    // called from processBlock
+    float computePortaRateFactor(int rate) const;
+    void writeFrequency(int voice, float pitchSemitones, bool keyOn = false);
+    int  findVoiceForPB() const;               // find target voice per PBMode
+    void handleBreath(int value);              // MIDI CC#2 handler
+
     void writeReg(uint8_t reg, uint8_t val);
     void writeField(uint8_t addr, unsigned ls_bit, unsigned bits, uint8_t data);
     void clockChip(int cycles);  // clock OPM without collecting audio output
 
     // VCED → YM2151 register conversion
     void applyPatchToVoice(int voice, const DX21_Patch& patch);  // all static params
-    void applyTL(int voice, const DX21_Patch& patch, int midiNote, int velocity);  // per-note TL
-    void setFrequency(int voice, bool keyOn);
+    void applyTL(int voice, const DX21_Patch& patch, int midiNote, int velocity, int tlOffset = 0);  // per-note TL
     void noteOn(int note, int velocity);
     void noteOff(int note);
-    int  allocVoice(int note);
+
+    // --- Side-based voice management (DX21 play modes) ---
+    enum Side { SideA, SideB };
+    int  allocVoice(Side side, int note);
+    void freeVoice(int voice);
+    Side routeNoteToSide(int note) const;
+    int  voiceStart(Side side) const;
+    int  voiceCount(Side side) const;
+    void applyPatchToSide(Side side, int patchIndex);
+    const DX21_Patch* getPatch(int index) const;  // RAM priority, ROM fallback
+    void setupVoice(int voice, int note, int velocity, const DX21_Patch& patch);
 
     // DX21 Level Scaling: computes TL adjustment based on LS and note
     uint8_t computeLSOffset(uint8_t ls, int note) const;

@@ -64,13 +64,38 @@ static const uint8_t OP_SLOT[4] = { 0, 8, 16, 24 };
 // ===========================================================================
 // Konstruktor
 // ===========================================================================
-COPMEmu::COPMEmu()
-    : m_currentPatch(0)
+COPMEmu::COPMEmu(IFileSystem* fs)
+    : m_fs(fs)
+    , m_memory(fs)
+    , m_currentPatch(0)
     , m_sustainPedal(false)
     , m_voiceAge(0)
     , m_cycleAccum(0)
     , m_pendingCount(0)
+    , m_playMode(Single)
+    , m_splitPoint(60)
+    , m_balance(50)
+    , m_mono(false)
+    , m_patchA(0)
+    , m_patchB(0)
+    , m_masterTune(0)
+    , m_pbValue(0)
+    , m_pbRange(2)
+    , m_portaMode(PortaOff)
+    , m_portaRate(0)
+    , m_portaRateFactor(0.0f)
+    , m_pbMode(PBAll)
+    , m_breathValue(0)
+    , m_breathPitchBias(0)
+    , m_breathAmplitude(0)
+    , m_breathEGBias(0)
+    , m_breathEGDepth(0)
+    , m_sysexEditVoice(0)
 {
+    for (int i = 0; i < kSysexNumParams; ++i) {
+        m_sysexParam[i] = 0;
+        m_sysexDirty[i] = false;
+    }
     m_filterL.init(kSampleRate, kFilterCutoff);
     m_filterR.init(kSampleRate, kFilterCutoff);
     memset(&m_chip, 0, sizeof(m_chip));
@@ -78,7 +103,7 @@ COPMEmu::COPMEmu()
     memset(m_pendingL, 0, sizeof(m_pendingL));
     memset(m_pendingR, 0, sizeof(m_pendingR));
     for (int i = 0; i < kNumVoices; ++i) {
-        m_voices[i] = { false, false, 0, 0, 0, 0 };
+        m_voices[i] = { false, false, 0, 0, 0, 0, 0.0f, 0.0f, false };
     }
 }
 
@@ -88,6 +113,9 @@ COPMEmu::COPMEmu()
 void COPMEmu::Initialize()
 {
     OPM_Reset(&m_chip, opm_flags_ym2164);
+
+    // Initialize RAM voices from ROM patches (first 32)
+    initRamFromRom();
 
     clockChip(64);
 
@@ -317,7 +345,7 @@ void COPMEmu::applyPatchToVoice(int voice, const DX21_Patch& patch)
 // OPP TL ramp (bit 7) ensures smooth transitions from the base TL written
 // by applyPatchToVoice to the per-note TL with LS/KVS offsets.
 // ===========================================================================
-void COPMEmu::applyTL(int voice, const DX21_Patch& patch, int midiNote, int velocity)
+void COPMEmu::applyTL(int voice, const DX21_Patch& patch, int midiNote, int velocity, int tlOffset)
 {
     for (int op = 0; op < 4; ++op) {
         int slot = voice + OP_SLOT[op];
@@ -326,17 +354,26 @@ void COPMEmu::applyTL(int voice, const DX21_Patch& patch, int midiNote, int velo
         uint8_t tl = (99 - o.out) * 127 / 99;
         tl += computeLSOffset(o.ls, midiNote);
         tl += computeKVSOffset(o.kvs, velocity);
+        tl += static_cast<uint8_t>(tlOffset);
         if (tl > 127) tl = 127;
         writeReg(0x60 + slot, 0x80 | (tl & 0x7F));  // bit 7 = OPP ramp enable
     }
 }
 
 // ===========================================================================
-// setFrequency
+// writeFrequency — write KC/KF from a pitch in semitones
+// Handles master tune, pitch bend, and portamento.
 // ===========================================================================
-void COPMEmu::setFrequency(int voice, bool keyOn)
+void COPMEmu::writeFrequency(int voice, float pitchSemitones, bool keyOn)
 {
-    int note = m_voices[voice].note;
+    pitchSemitones += m_masterTune / 100.0f;
+
+    // Clamp to valid MIDI range after tuning
+    if (pitchSemitones < 0.0f) pitchSemitones = 0.0f;
+    if (pitchSemitones > 127.0f) pitchSemitones = 127.0f;
+
+    int midiNote = static_cast<int>(pitchSemitones);
+    float frac   = pitchSemitones - static_cast<float>(midiNote);
 
     // KC layout: chip-octave changes between C and C# (not between B and C),
     // and 'C' is the top of an octave (nibble 14). We shift the boundary
@@ -344,7 +381,7 @@ void COPMEmu::setFrequency(int voice, bool keyOn)
     //   MIDI 60 (C4)  → KC 0x3E  (chip-oct 3, nibble C)
     //   MIDI 61 (C#4) → KC 0x40  (chip-oct 4, nibble C#)
     //   MIDI 69 (A4)  → KC 0x4A  (chip-oct 4, nibble A) → 440 Hz on real chip
-    int n = note - 1;
+    int n = midiNote - 1;
     if (n < 0) n = 0;
     int octave = n / 12 - 1;
     if (octave < 0) octave = 0;
@@ -352,8 +389,11 @@ void COPMEmu::setFrequency(int voice, bool keyOn)
     unsigned key = KC_TABLE[n % 12];
     uint8_t kc   = static_cast<uint8_t>((octave << 4) | key);
 
+    // KF: 0..255 = 0..1/2 semitone (64 steps = 1 semitone)
+    int kf = static_cast<int>(frac * 64.0f) & 0xFF;
+
     writeReg(0x28 + voice, kc);
-    writeReg(0x30 + voice, 0x00);           // KF=0 (no sub-semitone tuning)
+    writeReg(0x30 + voice, static_cast<uint8_t>(kf));
 
     if (keyOn) {
         // YM2151 KeyOn register: bits[6:3]=operator flags, bits[2:0]=channel
@@ -361,6 +401,31 @@ void COPMEmu::setFrequency(int voice, bool keyOn)
     } else {
         writeReg(0x08, static_cast<uint8_t>(voice));
     }
+}
+
+// ===========================================================================
+// applyPitchToVoice — update KC/KF for pitch bend / portamento on active voice
+// ===========================================================================
+void COPMEmu::applyPitchToVoice(int voice)
+{
+    if (voice < 0 || voice >= kNumVoices) return;
+    if (!m_voices[voice].active) return;
+
+    float pitch = m_voices[voice].currentPitch;
+
+    // Apply pitch bend
+    if (m_pbRange > 0 && m_pbValue != 0) {
+        float pbSemitones = (static_cast<float>(m_pbValue) / 8192.0f) * static_cast<float>(m_pbRange);
+        pitch += pbSemitones;
+    }
+
+    // Apply breath controller pitch bias
+    if (m_breathPitchBias > 0 && m_breathValue > 0) {
+        float breathSemitones = (static_cast<float>(m_breathValue) / 127.0f) * (static_cast<float>(m_breathPitchBias) / 99.0f) * 12.0f;
+        pitch += breathSemitones;
+    }
+
+    writeFrequency(voice, pitch, false); // no keyOn
 }
 
 // ===========================================================================
@@ -379,41 +444,58 @@ void COPMEmu::setFrequency(int voice, bool keyOn)
 // ensures the envelope ramps down quickly, and the max TL silences the
 // output regardless of the envelope phase.
 // ===========================================================================
-int COPMEmu::allocVoice(int note)
+int COPMEmu::allocVoice(Side side, int note)
 {
-    // Search by original MIDI note (retrigger)
-    for (int i = 0; i < kNumVoices; ++i) {
-        if (m_voices[i].active && m_voices[i].origNote == note) {
-            // Retrigger: KeyOff first to reset envelope, then fade
-            writeReg(0x08, static_cast<uint8_t>(i));
-            for (int op = 0; op < 4; ++op) {
-                int slot = i + OP_SLOT[op];
-                writeReg(0x60 + slot, 0xFF);  // TL=max + OPP ramp → silence
+    int start = voiceStart(side);
+    int count = voiceCount(side);
+    if (count == 0) return -1;
+
+    // MONO mode: free the single voice slot before allocation
+    if (m_mono && count == 1) {
+        for (int i = start; i < start + count; ++i) {
+            if (m_voices[i].active) {
+                freeVoice(i);
+                break;
             }
+        }
+    }
+
+    // Search by original MIDI note (retrigger) within side
+    for (int i = start; i < start + count; ++i) {
+        if (m_voices[i].active && m_voices[i].origNote == note) {
+            freeVoice(i);
             m_voices[i].age = m_voiceAge++;
             return i;
         }
     }
-    // Find a free voice
-    for (int i = 0; i < kNumVoices; ++i) {
+    // Find a free voice within side
+    for (int i = start; i < start + count; ++i) {
         if (!m_voices[i].active) return i;
     }
-    // Steal oldest voice — smooth fade-out
-    int oldest = 0;
-    for (int i = 1; i < kNumVoices; ++i) {
+    // Steal oldest voice within side — smooth fade-out
+    int oldest = start;
+    for (int i = start + 1; i < start + count; ++i) {
         if (m_voices[i].age < m_voices[oldest].age) oldest = i;
     }
-    // KeyOff starts the release phase
-    writeReg(0x08, static_cast<uint8_t>(oldest));
-    // Fade to silence: TL → max with OPP ramp, RR → maximum for fast release
+    freeVoice(oldest);
+    // Fast release for stolen voice
     for (int op = 0; op < 4; ++op) {
         int slot = oldest + OP_SLOT[op];
-        writeReg(0x60 + slot, 0xFF);  // TL=max + OPP ramp → smooth fade
         writeReg(0xE0 + slot, (0x0F << 0));  // RR=15 → fastest release
     }
-    m_voices[oldest].active = false;
-    m_voices[oldest].sustained = false;
     return oldest;
+}
+
+void COPMEmu::freeVoice(int voice)
+{
+    if (voice < 0 || voice >= kNumVoices) return;
+    writeReg(0x08, static_cast<uint8_t>(voice));
+    for (int op = 0; op < 4; ++op) {
+        int slot = voice + OP_SLOT[op];
+        writeReg(0x60 + slot, 0xFF);  // TL=max + OPP ramp → silence
+    }
+    m_voices[voice].active = false;
+    m_voices[voice].sustained = false;
 }
 
 // ===========================================================================
@@ -426,32 +508,41 @@ void COPMEmu::noteOn(int note, int velocity)
         return;
     }
 
-    int voice = allocVoice(note);
-    if (voice < 0) return;
-
-    const DX21_Patch& patch = dx21_patches[m_currentPatch];
-    int transposed = note + patch.key_offset;
-    if (transposed < 0) transposed = 0;
-    if (transposed > 127) transposed = 127;
-
-    m_voices[voice].active = true;
-    m_voices[voice].sustained = false;
-    m_voices[voice].origNote = note;
-    m_voices[voice].note = transposed;
-    m_voices[voice].velocity = velocity;
-    m_voices[voice].age = m_voiceAge++;
-
-    // Phase-reset click mask: KeyOn resets all operator phase counters to 0,
-    // producing a brief transient. To mask this, we start from silence (TL=max)
-    // and fade in via the OPP TL-ramp. Sequence:
-    //   1. TL = max attenuation (0xFF) — mute the voice
-    //   2. KC, KF, KeyOn — operators start from phase 0, but output is silent
-    //   3. Target TL with OPP ramp — smooth fade-in from silence (~2 ms)
-    for (int op = 0; op < 4; ++op) {
-        writeReg(0x60 + voice + OP_SLOT[op], 0xFF);
+    switch (m_playMode) {
+    case Single: {
+        int voice = allocVoice(SideA, note);
+        if (voice < 0) return;
+        const DX21_Patch* patch = getPatch(m_patchA);
+        if (!patch) break;
+        setupVoice(voice, note, velocity, *patch);
+        break;
     }
-    setFrequency(voice, true);
-    applyTL(voice, patch, transposed, velocity);
+    case Dual: {
+        int vA = allocVoice(SideA, note);
+        if (vA >= 0) {
+            const DX21_Patch* patchA = getPatch(m_patchA);
+            if (!patchA) break;
+            setupVoice(vA, note, velocity, *patchA);
+        }
+        int vB = allocVoice(SideB, note);
+        if (vB >= 0) {
+            const DX21_Patch* patchB = getPatch(m_patchB);
+            if (!patchB) break;
+            setupVoice(vB, note, velocity, *patchB);
+        }
+        break;
+    }
+    case Split: {
+        Side side = routeNoteToSide(note);
+        int voice = allocVoice(side, note);
+        if (voice < 0) return;
+        const DX21_Patch& patch = (side == SideA)
+            ? *getPatch(m_patchA)
+            : *getPatch(m_patchB);
+        setupVoice(voice, note, velocity, patch);
+        break;
+    }
+    }
 }
 
 // ===========================================================================
@@ -493,6 +584,18 @@ void COPMEmu::processMidi(uint8_t* data, int size)
         else if (status == 0xF8 || status == 0xFE || status == 0xFC) {
             msgLen = 1;  // Realtime: skip
         }
+        else if (status == 0xF0) {
+            // SysEx: find length by scanning for 0xF7
+            int j = i;
+            while (j < size && data[j] != 0xF7) ++j;
+            if (j < size && data[j] == 0xF7) {
+                handleSysex(&data[i], j - i + 1);
+                i = j + 1;
+            } else {
+                ++i;  // incomplete SysEx, skip
+            }
+            continue;
+        }
         else {
             ++i;
             continue;
@@ -532,6 +635,9 @@ void COPMEmu::processMidiBuffer()
         applyProgramChange(prog);
     }
 
+    // Apply pending SysEx parameter changes
+    applySysexChanges();
+
     int readPos  = m_midiReadPos.load(std::memory_order_relaxed);
     int writePos = m_midiWritePos.load(std::memory_order_acquire);
     int count = writePos - readPos;
@@ -564,6 +670,21 @@ void COPMEmu::processMidiBuffer()
                 }
             }
             m_sustainPedal = pedalOn;
+        }
+        else if (status == 0xB0 && ev.data1 == 1) {
+            // Modulation Wheel → LFO PMD (Pitch Modulation Depth)
+            // Map 0..127 → 0..99 (DX21 PMD range)
+            uint8_t pmd = static_cast<uint8_t>(ev.data2 * 99 / 127);
+            writeReg(0x19, (pmd & 0x7F) | 0x80);
+        }
+        else if (status == 0xB0 && ev.data1 == 2) {
+            // Breath Controller
+            handleBreath(ev.data2);
+        }
+        else if (status == 0xE0) {
+            // Pitch Bend: 14-bit value (data2 MSB, data1 LSB)
+            int pb = (ev.data2 << 7) | ev.data1;  // 0..16383
+            setPitchBend(pb);
         }
     }
 
@@ -599,6 +720,7 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
     // DAC-Samples an den bestehenden Pending-Puffer an. Getragene Daten
     // aus dem vorherigen processBlock-Aufruf werden zuerst konsumiert.
     processMidiBuffer();
+    updatePortamento();
 
     int src = 0;  // Leseposition im Pending-Puffer
     for (int i = 0; i < numSamples; ++i) {
@@ -704,10 +826,10 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
 // ===========================================================================
 int  COPMEmu::getNumPrograms()              { return TOTAL_OPM_PATCHES; }
 int  COPMEmu::getCurrentProgram()         { return m_currentPatch; }
-const char* COPMEmu::getCurrentProgramName() { return dx21_patches[m_currentPatch].name; }
+const char* COPMEmu::getCurrentProgramName() { const DX21_Patch* p = getPatch(m_currentPatch); return p ? p->name : ""; }
 const char* COPMEmu::getProgramName(int index) {
     if (index >= 0 && index < TOTAL_OPM_PATCHES)
-        return dx21_patches[index].name;
+        { const DX21_Patch* p = getPatch(index); return p ? p->name : ""; }
     return "";
 }
 
@@ -744,18 +866,734 @@ void COPMEmu::setCurrentProgram(int index)
 void COPMEmu::applyProgramChange(int index)
 {
     m_currentPatch = index;
-    const DX21_Patch& patch = dx21_patches[m_currentPatch];
+    m_patchA = index;
 
-    // Write ALL static patch parameters for ALL 8 voices.
-    // approach: write everything at program change time,
-    // not per noteOn. Per-note only writes TL (with LS/KVS), KC, KF, KeyOn.
-    for (int v = 0; v < kNumVoices; ++v) {
-        applyPatchToVoice(v, patch);
+    applyPatchToSide(SideA, index);
+    // In Single mode side B has no voices; applyPatchToSide handles count==0.
+    if (m_playMode != Single) {
+        applyPatchToSide(SideB, m_patchB);
+    }
+}
+
+
+// ===========================================================================
+// setupVoice — configure a single voice for note-on
+// ===========================================================================
+void COPMEmu::setupVoice(int voice, int note, int velocity, const DX21_Patch& patch)
+{
+    int transposed = note + patch.key_offset;
+    if (transposed < 0) transposed = 0;
+    if (transposed > 127) transposed = 127;
+
+    float pitch = static_cast<float>(transposed);
+
+    m_voices[voice].active = true;
+    m_voices[voice].sustained = false;
+    m_voices[voice].origNote = note;
+    m_voices[voice].note = transposed;
+    m_voices[voice].velocity = velocity;
+    m_voices[voice].age = m_voiceAge++;
+
+    // Portamento: if active and voice already has a pitch, glide from there
+    bool shouldPorta = (m_portaMode != PortaOff);
+    if (shouldPorta && m_voices[voice].currentPitch != 0.0f) {
+        if (m_portaMode == PortaFingered) {
+            // Fingered: only portamento if legato (voice was already active)
+            // We already know currentPitch != 0, but check if it was recently active
+            // In our model: if currentPitch is set and voice was not just stolen,
+            // we treat it as legato.
+            m_voices[voice].targetPitch = pitch;
+            m_voices[voice].isPorting = true;
+        } else {
+            // Full Time: always portamento
+            m_voices[voice].targetPitch = pitch;
+            m_voices[voice].isPorting = true;
+        }
+    } else {
+        // No portamento: snap immediately
+        m_voices[voice].currentPitch = pitch;
+        m_voices[voice].targetPitch = pitch;
+        m_voices[voice].isPorting = false;
     }
 
-    // Global LFO registers
-    writeReg(0x18, patch.lfo_speed);
-    writeReg(0x19, patch.amd & 0x7F);            // AMD
-    writeReg(0x19, (patch.pmd & 0x7F) | 0x80);   // PMD (bit 7=1)
-    writeField(0x1B, 0, 2, patch.lfo_wave & 0x03);
+    // Phase-reset click mask: start from silence and fade in via OPP TL-ramp
+    for (int op = 0; op < 4; ++op) {
+        writeReg(0x60 + voice + OP_SLOT[op], 0xFF);
+    }
+    // Compute balance TL offset based on side
+    int tlOffset = 0;
+    if (m_playMode != Single && m_balance != 50) {
+        Side side = (voice < 4) ? SideA : SideB;
+        if (m_balance < 50 && side == SideA) {
+            tlOffset = ((50 - m_balance) * 127) / 50;
+        } else if (m_balance > 50 && side == SideB) {
+            tlOffset = ((m_balance - 50) * 127) / 50;
+        }
+    }
+
+    writeFrequency(voice, m_voices[voice].currentPitch, true);
+    applyTL(voice, patch, transposed, velocity, tlOffset);
+}
+
+// ===========================================================================
+// applyPatchToSide — write static patch parameters to all voices of a side
+// ===========================================================================
+void COPMEmu::applyPatchToSide(Side side, int patchIndex)
+{
+    if (patchIndex < 0 || patchIndex >= TOTAL_OPM_PATCHES) return;
+    const DX21_Patch* patch = getPatch(patchIndex);
+    if (!patch) return;
+
+    int start = voiceStart(side);
+    int count = voiceCount(side);
+    for (int v = start; v < start + count; ++v) {
+        applyPatchToVoice(v, *patch);  // patch is pointer here
+    }
+
+    // Global LFO registers (only written once, not per voice)
+    if (count > 0) {
+        writeReg(0x18, patch->lfo_speed);
+        writeReg(0x19, patch->amd & 0x7F);            // AMD
+        writeReg(0x19, (patch->pmd & 0x7F) | 0x80);   // PMD (bit 7=1)
+        writeField(0x1B, 0, 2, patch->lfo_wave & 0x03);
+    }
+}
+
+// ===========================================================================
+// routeNoteToSide — determine which side a MIDI note belongs to in SPLIT mode
+// ===========================================================================
+COPMEmu::Side COPMEmu::routeNoteToSide(int note) const
+{
+    if (m_playMode != Split) return SideA;
+    return (note <= m_splitPoint) ? SideA : SideB;
+}
+
+// ===========================================================================
+// voiceStart / voiceCount — voice allocation ranges per side and play mode
+// ===========================================================================
+int COPMEmu::voiceStart(Side side) const
+{
+    if (side == SideA) return 0;
+    return 4;  // Side B always starts at voice 4
+}
+
+int COPMEmu::voiceCount(Side side) const
+{
+    switch (m_playMode) {
+    case Single:
+        return (side == SideA) ? 8 : 0;
+    case Dual:
+    case Split:
+        return 4;
+    }
+    return 0;
+}
+
+// ===========================================================================
+// Performance Parameter Setters
+// ===========================================================================
+void COPMEmu::setPlayMode(PlayMode mode)
+{
+    if (m_playMode == mode) return;
+
+    // Free all voices before switching modes to avoid stale state
+    for (int i = 0; i < kNumVoices; ++i) {
+        if (m_voices[i].active) {
+            freeVoice(i);
+        }
+    }
+    m_playMode = mode;
+
+    // Re-apply patches for the new mode
+    applyPatchToSide(SideA, m_patchA);
+    applyPatchToSide(SideB, m_patchB);
+}
+
+void COPMEmu::setSplitPoint(int note)
+{
+    m_splitPoint = note;
+}
+
+void COPMEmu::setBalance(int balance)
+{
+    if (balance < 0) balance = 0;
+    if (balance > 99) balance = 99;
+    m_balance = balance;
+
+    // Re-apply TL with new balance offset for all active voices
+    if (m_playMode == Single) return;
+
+    for (int v = 0; v < kNumVoices; ++v) {
+        if (!m_voices[v].active) continue;
+
+        Side side = (v < 4) ? SideA : SideB;
+        int tlOffset = 0;
+        if (m_balance < 50 && side == SideA) {
+            tlOffset = ((50 - m_balance) * 127) / 50;
+        } else if (m_balance > 50 && side == SideB) {
+            tlOffset = ((m_balance - 50) * 127) / 50;
+        }
+
+        // Determine patch for this voice
+        int patchIdx = (side == SideA) ? m_patchA : m_patchB;
+        if (patchIdx < 0 || patchIdx >= TOTAL_OPM_PATCHES) continue;
+        const DX21_Patch* patch = getPatch(patchIdx);
+        if (!patch) continue;
+
+        applyTL(v, *patch, m_voices[v].note, m_voices[v].velocity, tlOffset);
+    }
+}
+
+void COPMEmu::setMono(bool mono)
+{
+    if (m_mono == mono) return;
+
+    // Free all voices before switching poly/mono
+    for (int i = 0; i < kNumVoices; ++i) {
+        if (m_voices[i].active) {
+            freeVoice(i);
+        }
+    }
+    m_mono = mono;
+}
+
+void COPMEmu::setPatchA(int index)
+{
+    if (index < 0 || index >= TOTAL_OPM_PATCHES) return;
+    m_patchA = index;
+    if (m_playMode == Single) {
+        m_currentPatch = index;  // backward compat
+    }
+    applyPatchToSide(SideA, index);
+}
+
+void COPMEmu::setPatchB(int index)
+{
+    if (index < 0 || index >= TOTAL_OPM_PATCHES) return;
+    m_patchB = index;
+    applyPatchToSide(SideB, index);
+}
+
+void COPMEmu::setMasterTune(int cents)
+{
+    if (cents < -64) cents = -64;
+    if (cents > 63) cents = 63;
+    m_masterTune = cents;
+}
+
+
+// ===========================================================================
+// computePortaRateFactor — map DX21 rate (0..99) to per-sample increment
+// ===========================================================================
+float COPMEmu::computePortaRateFactor(int rate) const
+{
+    if (rate <= 0) return 0.0f;
+    // DX21 portamento rate 99 = ~15 semitones/sec at 48kHz
+    // Rate factor = rate / (99 * sampleRate / targetSpeed)
+    // Empirically: rate 99 → factor ~0.0005 per sample
+    return static_cast<float>(rate) * 0.00000505f;
+}
+
+// ===========================================================================
+// updatePortamento — interpolate pitch and write KC/KF for porting voices
+// Called from processBlock (audio thread) after MIDI processing.
+// ===========================================================================
+void COPMEmu::updatePortamento()
+{
+    if (m_portaMode == PortaOff) return;
+
+    for (int v = 0; v < kNumVoices; ++v) {
+        if (!m_voices[v].active || !m_voices[v].isPorting) continue;
+
+        float delta = m_voices[v].targetPitch - m_voices[v].currentPitch;
+        if (std::abs(delta) < 0.001f) {
+            m_voices[v].currentPitch = m_voices[v].targetPitch;
+            m_voices[v].isPorting = false;
+            applyPitchToVoice(v);
+            continue;
+        }
+
+        // Move currentPitch towards targetPitch
+        float step = delta * m_portaRateFactor;
+        // Clamp step to avoid overshooting
+        if (std::abs(step) > std::abs(delta)) step = delta;
+
+        m_voices[v].currentPitch += step;
+        applyPitchToVoice(v);
+    }
+}
+
+// ===========================================================================
+// setPitchBend — apply global pitch bend to all active voices
+// MIDI pitch bend: 0..16383, center = 8192
+// ===========================================================================
+void COPMEmu::setPitchBend(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 16383) value = 16383;
+    m_pbValue = value - 8192;  // center at 0
+
+    if (m_pbMode == PBAll) {
+        // Apply to all active voices
+        for (int v = 0; v < kNumVoices; ++v) {
+            if (m_voices[v].active) {
+                applyPitchToVoice(v);
+            }
+        }
+    } else {
+        // Apply only to the target voice
+        int target = findVoiceForPB();
+        if (target >= 0) {
+            applyPitchToVoice(target);
+        }
+    }
+}
+
+// ===========================================================================
+// setPitchBendRange — 0..12 semitones
+// ===========================================================================
+void COPMEmu::setPitchBendRange(int range)
+{
+    if (range < 0) range = 0;
+    if (range > 12) range = 12;
+    m_pbRange = range;
+}
+
+// ===========================================================================
+// setPortamentoMode — 0=Off, 1=FullTime, 2=Fingered
+// ===========================================================================
+void COPMEmu::setPortamentoMode(int mode)
+{
+    if (mode < 0 || mode > 2) return;
+    PortaMode oldMode = m_portaMode;
+    m_portaMode = static_cast<PortaMode>(mode);
+    if (oldMode == PortaOff && m_portaMode != PortaOff) {
+        m_portaRateFactor = computePortaRateFactor(m_portaRate);
+    }
+}
+
+// ===========================================================================
+// setPortamentoRate — 0..99
+// ===========================================================================
+void COPMEmu::setPortamentoRate(int rate)
+{
+    if (rate < 0) rate = 0;
+    if (rate > 99) rate = 99;
+    m_portaRate = rate;
+    m_portaRateFactor = computePortaRateFactor(rate);
+}
+
+
+// ===========================================================================
+// findVoiceForPB — find the target voice for pitch bend based on PBMode
+// ===========================================================================
+int COPMEmu::findVoiceForPB() const
+{
+    if (m_pbMode == PBAll) return -1;  // apply to all
+
+    int target = -1;
+    switch (m_pbMode) {
+    case PBLow: {
+        // Find active voice with lowest MIDI note
+        int lowestNote = 128;
+        for (int v = 0; v < kNumVoices; ++v) {
+            if (m_voices[v].active && m_voices[v].origNote < lowestNote) {
+                lowestNote = m_voices[v].origNote;
+                target = v;
+            }
+        }
+        break;
+    }
+    case PBHigh: {
+        // Find active voice with highest MIDI note
+        int highestNote = -1;
+        for (int v = 0; v < kNumVoices; ++v) {
+            if (m_voices[v].active && m_voices[v].origNote > highestNote) {
+                highestNote = m_voices[v].origNote;
+                target = v;
+            }
+        }
+        break;
+    }
+    case PBKOn: {
+        // Find active voice with highest age (most recent)
+        uint32_t newestAge = 0;
+        for (int v = 0; v < kNumVoices; ++v) {
+            if (m_voices[v].active && m_voices[v].age >= newestAge) {
+                newestAge = m_voices[v].age;
+                target = v;
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return target;
+}
+
+// ===========================================================================
+// handleBreath — MIDI CC#2 breath controller
+// ===========================================================================
+void COPMEmu::handleBreath(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 127) value = 127;
+    m_breathValue = value;
+
+    // Apply breath pitch bias to active voices
+    if (m_breathPitchBias > 0) {
+        for (int v = 0; v < kNumVoices; ++v) {
+            if (m_voices[v].active) {
+                applyPitchToVoice(v);
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// setPBMode — 0=All, 1=Low, 2=High, 3=K-on
+// ===========================================================================
+void COPMEmu::setPBMode(int mode)
+{
+    if (mode < 0 || mode > 3) return;
+    m_pbMode = static_cast<PBMode>(mode);
+}
+
+// ===========================================================================
+// Breath Controller Parameter Setters
+// ===========================================================================
+void COPMEmu::setBreathPitchBias(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 99) value = 99;
+    m_breathPitchBias = value;
+}
+
+void COPMEmu::setBreathAmplitude(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 99) value = 99;
+    m_breathAmplitude = value;
+}
+
+void COPMEmu::setBreathEGBias(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 99) value = 99;
+    m_breathEGBias = value;
+}
+
+void COPMEmu::setBreathEGDepth(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 99) value = 99;
+    m_breathEGDepth = value;
+}
+
+
+// ===========================================================================
+// initRamFromRom — Copy first 32 ROM patches into RAM bank
+// ===========================================================================
+void COPMEmu::initRamFromRom()
+{
+    m_memory.initRamFromRom(dx21_patches, TOTAL_OPM_PATCHES);
+}
+
+// ===========================================================================
+// applyPerformance — Load a performance memory into the engine
+// ===========================================================================
+void COPMEmu::applyPerformance(int perfSlot)
+{
+    const DX21_Performance* perf = m_memory.getPerformance(perfSlot);
+    if (!perf) return;
+
+    // Free all voices before switching
+    for (int i = 0; i < kNumVoices; ++i) {
+        if (m_voices[i].active) {
+            freeVoice(i);
+        }
+    }
+
+    m_playMode = static_cast<PlayMode>(perf->playMode);
+    m_patchA = perf->voiceA;
+    m_patchB = perf->voiceB;
+    m_splitPoint = perf->splitPoint;
+    m_balance = perf->balance;
+    m_pbRange = perf->pbRange;
+    m_pbMode = static_cast<PBMode>(perf->pbMode);
+    m_portaMode = static_cast<PortaMode>(perf->portaMode);
+    m_portaRate = perf->portaRate;
+    m_portaRateFactor = computePortaRateFactor(m_portaRate);
+    m_masterTune = perf->transpose;  // Using transpose as master tune for now
+    // breath params
+    m_breathPitchBias = perf->breathPitch;
+    m_breathAmplitude = perf->breathAmp;
+    m_breathEGBias = perf->breathEGBias;
+
+    // Apply patches to sides
+    applyPatchToSide(SideA, m_patchA);
+    applyPatchToSide(SideB, m_patchB);
+}
+
+// ===========================================================================
+// getPatch — RAM priority lookup, ROM fallback
+// ===========================================================================
+const DX21_Patch* COPMEmu::getPatch(int index) const
+{
+    if (index < 0 || index >= 128) return nullptr;
+
+    // Try RAM first (slots 0-31)
+    if (index < CDX21Memory::kNumRamVoices) {
+        const DX21_Patch* ram = m_memory.getRamVoice(index);
+        if (ram) return ram;
+    }
+
+    // Fallback to ROM
+    if (index < TOTAL_OPM_PATCHES) return &dx21_patches[index];
+    return nullptr;
+}
+
+
+// ===========================================================================
+// SysEx Real-Time Parameter Change
+// ===========================================================================
+
+// DX21 Parameter Change SysEx format:
+//   F0 43 0n 12 pp vv F7
+//   n  = device number (0-15)
+//   12 = DX21 model ID
+//   pp = parameter number (0-75)
+//   vv = value (0-127)
+//
+// DX21 VCED byte layout (76 bytes per voice):
+//   Byte 0:   Algorithm (0-7)
+//   Byte 1:   Feedback (0-7)
+//   Byte 2:   LFO Speed (0-255)
+//   Byte 3:   LFO Delay (0-127)
+//   Byte 4:   PMD (0-127)
+//   Byte 5:   AMD (0-127)
+//   Byte 6:   LFO Sync (0/1)
+//   Byte 7:   LFO Waveform (0-3)
+//   Byte 8:   (PMS << 4) | AMS
+//   Byte 9:   Transpose (0-48, offset 24)
+//   Byte 10-23: OP1 (14 bytes)
+//   Byte 24-37: OP2
+//   Byte 38-51: OP3
+//   Byte 52-65: OP4
+//   Byte 66-73: Name (8 chars)
+//   Byte 74:  Pitch Bend Range (0-12)
+//   Byte 75:  (reserved)
+//
+// Operator bytes (14 per operator):
+//   [0] AR, [1] D1R, [2] D2R, [3] RR, [4] D1L,
+//   [5] LS, [6] RS, [7] EBS, [8] AME, [9] KVS,
+//   [10] OUT, [11] CRS, [12] DET, [13] reserved
+
+// ===========================================================================
+// handleSysex — parse incoming SysEx, queue parameter changes for audio thread
+// Called from MIDI thread (processMidi).
+// ===========================================================================
+void COPMEmu::handleSysex(const uint8_t* data, int size)
+{
+    if (size < 7) return;
+    if (data[0] != 0xF0 || data[1] != 0x43) return;
+
+    uint8_t deviceAndModel = data[2];  // 0n where n = device number
+    uint8_t modelId = data[3];
+
+    // DX21 Parameter Change: F0 43 0n 12 pp vv F7
+    if (modelId == 0x12 && size == 7 && data[6] == 0xF7) {
+        uint8_t param = data[4];
+        uint8_t value = data[5];
+        if (param < kSysexNumParams) {
+            m_sysexParam[param] = value;
+            m_sysexDirty[param] = true;
+        }
+        return;
+    }
+
+    // DX21 32-voice VCED Bulk Dump: F0 43 0n 09 ... F7
+    // Handled by CDX21Memory::importSysex — just pass it through here.
+    if (modelId == 0x09) {
+        // We could store it and let the audio thread handle it,
+        // but bulk dumps are large and rare. For now, handle directly
+        // on MIDI thread since they don't touch audio-critical registers.
+        int imported = m_memory.importSysex(data, size);
+        (void)imported;
+        return;
+    }
+}
+
+// ===========================================================================
+// applySysexChanges — consume queued parameter changes on audio thread
+// ===========================================================================
+void COPMEmu::applySysexChanges()
+{
+    for (int i = 0; i < kSysexNumParams; ++i) {
+        if (!m_sysexDirty[i]) continue;
+        m_sysexDirty[i] = false;
+        applySysexParam(i, m_sysexParam[i]);
+    }
+}
+
+// ===========================================================================
+// applySysexParam — write one VCED parameter to the OPM chip
+// This updates both the OPM registers and the RAM patch.
+// ===========================================================================
+void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
+{
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+
+    // Update RAM patch so the change persists
+    DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
+    if (!ramPatch) return;
+
+    // --- Global parameters ---
+    if (paramIndex == 0) {
+        // Algorithm
+        ramPatch->alg = value & 0x07;
+        writeField(0x20 + voice, 0, 3, ramPatch->alg);
+    }
+    else if (paramIndex == 1) {
+        // Feedback
+        ramPatch->fb = value & 0x07;
+        writeField(0x20 + voice, 3, 3, ramPatch->fb);
+    }
+    else if (paramIndex == 2) {
+        // LFO Speed
+        ramPatch->lfo_speed = value;
+        writeReg(0x18, ramPatch->lfo_speed);
+    }
+    else if (paramIndex == 3) {
+        // LFO Delay (not a direct OPM register; store in patch only)
+        ramPatch->lfo_delay = value & 0x7F;
+    }
+    else if (paramIndex == 4) {
+        // PMD
+        ramPatch->pmd = value & 0x7F;
+        writeReg(0x19, (ramPatch->pmd & 0x7F) | 0x80);
+    }
+    else if (paramIndex == 5) {
+        // AMD
+        ramPatch->amd = value & 0x7F;
+        writeReg(0x19, ramPatch->amd & 0x7F);
+    }
+    else if (paramIndex == 6) {
+        // LFO Sync
+        ramPatch->lfo_sync = value & 0x01;
+    }
+    else if (paramIndex == 7) {
+        // LFO Waveform
+        ramPatch->lfo_wave = value & 0x03;
+        writeField(0x1B, 0, 2, ramPatch->lfo_wave);
+    }
+    else if (paramIndex == 8) {
+        // PMS (upper nibble) + AMS (lower nibble)
+        ramPatch->pms = (value >> 4) & 0x07;
+        ramPatch->ams = value & 0x03;
+        writeReg(0x38 + voice, ((ramPatch->pms & 0x07) << 4) | (ramPatch->ams & 0x03));
+    }
+    else if (paramIndex == 9) {
+        // Transpose
+        ramPatch->key_offset = static_cast<int8_t>(value) - 24;
+    }
+    else if (paramIndex >= 10 && paramIndex < 66) {
+        // Operator parameters
+        int opParam = paramIndex - 10;
+        int op = opParam / 14;
+        int sub = opParam % 14;
+        if (op < 0 || op > 3) return;
+
+        DX21_Operator& o = ramPatch->op[op];
+        int slot = voice + OP_SLOT[op];
+
+        switch (sub) {
+            case 0: // AR
+                o.ar = value & 0x1F;
+                writeField(0x80 + slot, 0, 5, o.ar);
+                break;
+            case 1: // D1R
+                o.d1r = value & 0x1F;
+                writeField(0xA0 + slot, 0, 5, o.d1r);
+                break;
+            case 2: // D2R
+                o.d2r = value & 0x1F;
+                writeField(0xC0 + slot, 0, 5, o.d2r);
+                break;
+            case 3: // RR
+                o.rr = value & 0x0F;
+                writeField(0xE0 + slot, 0, 4, o.rr);
+                break;
+            case 4: // D1L
+                o.d1l = value & 0x0F;
+                writeField(0xE0 + slot, 4, 4, o.d1l);
+                break;
+            case 5: // LS
+                o.ls = value;
+                break;
+            case 6: // RS
+                o.rs = value & 0x03;
+                writeField(0x80 + slot, 6, 2, o.rs);
+                break;
+            case 7: // EBS
+                o.ebs = value & 0x07;
+                break;
+            case 8: // AME
+                o.ame = value & 0x01;
+                writeField(0xA0 + slot, 7, 1, o.ame);
+                break;
+            case 9: // KVS
+                o.kvs = value & 0x07;
+                break;
+            case 10: // OUT (Output Level → TL)
+                o.out = value;
+                {
+                    uint8_t tl = (99 - o.out) * 127 / 99;
+                    if (tl > 127) tl = 127;
+                    writeReg(0x60 + slot, 0x80 | (tl & 0x7F));
+                }
+                break;
+            case 11: // CRS (Coarse Ratio → MUL)
+                o.crs = value & 0x3F;
+                {
+                    uint8_t mul = CRS_TO_MUL[o.crs & 0x3F];
+                    writeField(0x40 + slot, 0, 4, mul);
+                }
+                break;
+            case 12: // DET (Detune → DT1)
+                o.det = value & 0x07;
+                {
+                    uint8_t dt1 = DET_TO_DT1[o.det];
+                    writeField(0x40 + slot, 4, 3, dt1);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    else if (paramIndex >= 66 && paramIndex < 74) {
+        // Name characters (not mapped to OPM registers)
+        int nameIdx = paramIndex - 66;
+        if (nameIdx >= 0 && nameIdx < 8) {
+            ramPatch->name[nameIdx] = static_cast<char>(value);
+        }
+    }
+    else if (paramIndex == 74) {
+        // Pitch Bend Range (performance parameter)
+        m_pbRange = value & 0x7F;
+        if (m_pbRange > 12) m_pbRange = 12;
+    }
+}
+
+
+// ===========================================================================
+// setSysexEditVoice — select which voice slot receives real-time parameter changes
+// ===========================================================================
+void COPMEmu::setSysexEditVoice(int voice)
+{
+    if (voice < 0) voice = 0;
+    if (voice >= kNumVoices) voice = kNumVoices - 1;
+    m_sysexEditVoice = voice;
 }
