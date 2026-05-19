@@ -1,0 +1,28 @@
+name: Add Submodules
+
+on:
+  # Allows you to run this workflow manually from the Actions tab or through HTTP API
+  workflow_dispatch:
+
+jobs:
+  add_submodule:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Add circle-stdlib Submodule
+      run: |
+        git submodule add -b master https://github.com/smuehlst/circle-stdlib.git libs/circle-stdlib
+        cd libs/circle-stdlib
+        git fetch
+        git checkout
+      
+    - name: Commit changes
+      run: |
+        git config --global user.email "m.geerken@address-solutions.de"
+        git config --global user.name "Michi71"
+        git add .gitmodules libs/circle-stdlib
+        git commit -m 'Added <repository> as a submodule'
+        git push
