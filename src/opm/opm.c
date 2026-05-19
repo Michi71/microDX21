@@ -472,11 +472,21 @@ static void OPM_PhaseGenerate(opm_t *chip)
     uint32_t slot = (chip->cycles + 27) & 31;
     chip->pg_reset_latch[slot] = chip->pg_reset[slot];
     slot = (chip->cycles + 25) & 31;
-    /* Mask increment */
-    if (chip->pg_reset_latch[slot])
+    /* Free-running oscillator: do NOT mask pg_inc during KeyOff.
+     * On the real YM2151, the phase freezes during KeyOff (pg_inc=0),
+     * causing a discontinuity when KeyOn resumes oscillation. This creates
+     * an audible click because the frozen phase outputs a constant value
+     * (sine of the frozen angle), and the transition from constant to
+     * oscillating is a step function. By keeping the oscillator running
+     * during KeyOff, the output transitions smoothly from the old
+     * frequency to the new frequency when KeyOn arrives, with the EG
+     * release and TL ramp providing volume control. This is safe because
+     * the EG and TL ensure the output fades out during release.
+     */
+    /* if (chip->pg_reset_latch[slot])
     {
         chip->pg_inc[slot] = 0;
-    }
+    } */
     /* Phase step */
     slot = (chip->cycles + 24) & 31;
     if (chip->pg_reset_latch[slot] || chip->mode_test[3])

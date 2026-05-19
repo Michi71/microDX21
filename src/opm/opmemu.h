@@ -8,26 +8,30 @@
 #include <cmath>
 #include <atomic>
 
-// Second-order biquad low-pass filter (Butterworth)
+// Second-order biquad low-pass filter section (Butterworth)
 // Used to reconstruct the DAC output at the target sample rate,
 // removing high-frequency aliasing artifacts from the OPM output.
+// Supports Butterworth cascading: pass section=0 for Q≈0.5412 (1st section)
+// or section=1 for Q≈1.3066 (2nd section) of a 4th-order Butterworth filter.
 struct BiquadFilter {
     float b0, b1, b2, a1, a2;   // coefficients
     float x1, x2, y1, y2;       // state (input/output history)
 
-    void init(float sampleRate, float cutoffHz) {
+    void init(float sampleRate, float cutoffHz, int section) {
         float omega = 2.0f * M_PI * cutoffHz / sampleRate;
         float sn = sinf(omega);
         float cs = cosf(omega);
-        float alpha = sn / (2.0f * 0.7071f);  // Butterworth Q = 0.7071
+        // 4th-order Butterworth: two cascaded biquad sections
+        // Section 0: Q = 1/(2*sin(pi/8))  ≈ 0.5412
+        // Section 1: Q = 1/(2*sin(3*pi/8)) ≈ 1.3066
+        float q = (section == 0) ? 0.5411961001f : 1.3065629649f;
+        float alpha = sn / (2.0f * q);
         float a0 = 1.0f + alpha;
         b0 = (1.0f - cs) / (2.0f * a0);
         b1 = (1.0f - cs) / a0;
         b2 = (1.0f - cs) / (2.0f * a0);
         a1 = -2.0f * cs / a0;
         a2 = (1.0f - alpha) / a0;
-        // Normalize so b0+b1+b2 = 1 for unity gain at DC
-        // (already normalized by a0 division)
         x1 = x2 = y1 = y2 = 0.0f;
     }
 
@@ -169,6 +173,7 @@ public:
 private:
     static const int      kNumVoices  = 8;
     static const uint32_t kSampleRate = 48000;
+    static const int kKeyOnDelay = 256;  // ~5.3ms: TL ramp-up time before KeyOn
     // Nuked OPM: 1 OPM_Clock = 1 internal clock = 1/(3579545/2) seconds
     // Use external clock for fractional accumulator to handle the .5 Hz:
     //   internal_clocks_per_sample = 3579545 / (2 * 48000) = 37 + 27545/96000
@@ -188,6 +193,7 @@ private:
         float    targetPitch;  // target pitch
         bool     isPorting;    // portamento in progress
         int      attackSamples; // remaining attack fade-in samples (0 = fully open)
+        int      keyOnDelay;   // >0: KeyOn pending, countdown in audio samples
     };
 
     IFileSystem* m_fs;
@@ -283,6 +289,7 @@ private:
 
     // --- Pitch / Portamento ---
     void applyPitchToVoice(int voice);         // write KC/KF with PB+porta+tune+breath
+    void completeKeyOn(int voice);             // delayed KeyOn: KC/KF + TL + KeyOn
     void updatePortamento();                    // called from processBlock
     float computePortaRateFactor(int rate) const;
     void writeFrequency(int voice, float pitchSemitones, bool keyOn = false);
@@ -315,13 +322,18 @@ private:
     // DX21 Key Velocity Sensitivity: computes TL adjustment
     uint8_t computeKVSOffset(uint8_t kvs, int velocity) const;
 
-    // --- Biquad low-pass reconstruction filter ---
-    // The real YM2151/YM2164 has an analog reconstruction filter at the DAC
-    // output. We emulate this with a 2nd-order Butterworth LPF at ~10 kHz
-    // to remove high-frequency aliasing and smooth transient clicks.
-    static constexpr float kFilterCutoff = 10000.0f;  // Hz
-    BiquadFilter m_filterL;
-    BiquadFilter m_filterR;
+    // --- 4th-order Butterworth reconstruction filter ---
+    // The real DX21/YM2164 has an analog reconstruction filter at the DAC
+    // output that rolls off more aggressively than a simple 2nd-order filter.
+    // We emulate this with a 4th-order Butterworth LPF at 7.5 kHz (two
+    // cascaded biquad sections per channel) for a warmer, softer tone
+    // that more closely matches the original hardware.
+    // Response: -3 dB @ 7.5 kHz, -13 dB @ 10 kHz, -36 dB @ 15 kHz
+    static constexpr float kFilterCutoff = 7500.0f;  // Hz
+    BiquadFilter m_filterL1;  // section 0 (Q≈0.54)
+    BiquadFilter m_filterL2;  // section 1 (Q≈1.31)
+    BiquadFilter m_filterR1;  // section 0 (Q≈0.54)
+    BiquadFilter m_filterR2;  // section 1 (Q≈1.31)
 
     // DC blocker state (per-channel IIR high-pass ~10 Hz cutoff at 48kHz)
     float m_dcLastInL = 0.0f, m_dcLastOutL = 0.0f;
