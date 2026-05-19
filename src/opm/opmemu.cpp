@@ -81,7 +81,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_patchA(0)
     , m_patchB(0)
     , m_masterTune(0)
-    , m_masterGain(3.0f)
+    , m_masterGain(5.0f)
     , m_pbValue(0)
     , m_pbRange(2)
     , m_portaMode(PortaOff)
@@ -99,14 +99,16 @@ COPMEmu::COPMEmu(IFileSystem* fs)
         m_sysexParam[i] = 0;
         m_sysexDirty[i] = false;
     }
-    m_filterL.init(kSampleRate, kFilterCutoff);
-    m_filterR.init(kSampleRate, kFilterCutoff);
+    m_filterL1.init(kSampleRate, kFilterCutoff, 0);
+    m_filterL2.init(kSampleRate, kFilterCutoff, 1);
+    m_filterR1.init(kSampleRate, kFilterCutoff, 0);
+    m_filterR2.init(kSampleRate, kFilterCutoff, 1);
     memset(&m_chip, 0, sizeof(m_chip));
     memset(m_shadow, 0, sizeof(m_shadow));
     memset(m_pendingL, 0, sizeof(m_pendingL));
     memset(m_pendingR, 0, sizeof(m_pendingR));
     for (int i = 0; i < kNumVoices; ++i) {
-        m_voices[i] = { false, false, 0, 0, 0, 0, 0.0f, 0.0f, false, 0 };
+        m_voices[i] = { false, false, 0, 0, 0, 0, 0.0f, 0.0f, false, 0, 0 };
     }
 }
 
@@ -155,8 +157,10 @@ void COPMEmu::Initialize()
     clockChip(64);
 
     // Reset output filters to avoid clicks from stale state
-    m_filterL.reset();
-    m_filterR.reset();
+    m_filterL1.reset();
+    m_filterL2.reset();
+    m_filterR1.reset();
+    m_filterR2.reset();
 }
 
 // ===========================================================================
@@ -471,6 +475,7 @@ int COPMEmu::allocVoice(Side side, int note)
             // Mark voice for delayed retrigger — noteOn will handle it
             m_voices[i].active = false;  // free for now
             m_voices[i].sustained = false;
+            m_voices[i].keyOnDelay = 0;  // cancel any pending KeyOn
             m_voices[i].age = m_voiceAge++;
             return i;
         }
@@ -493,6 +498,7 @@ int COPMEmu::allocVoice(Side side, int note)
     }
     m_voices[oldest].active = false;
     m_voices[oldest].sustained = false;
+    m_voices[oldest].keyOnDelay = 0;  // cancel any pending KeyOn
     return oldest;
 }
 
@@ -506,6 +512,7 @@ void COPMEmu::freeVoice(int voice)
     }
     m_voices[voice].active = false;
     m_voices[voice].sustained = false;
+    m_voices[voice].keyOnDelay = 0;  // cancel pending KeyOn if any
 }
 
 // ===========================================================================
@@ -568,6 +575,7 @@ void COPMEmu::noteOff(int note)
                 writeReg(0x08, static_cast<uint8_t>(i));
                 m_voices[i].active = false;
                 m_voices[i].sustained = false;
+                m_voices[i].keyOnDelay = 0;  // cancel pending KeyOn
             }
         }
     }
@@ -764,6 +772,19 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
     processMidiBuffer();
     updatePortamento();
 
+    // Process pending KeyOns: countdown and send when delay expires.
+    // This gives the TL ramp time to reach near-max attenuation before
+    // the new note starts, eliminating the note-on click.
+    for (int v = 0; v < kNumVoices; ++v) {
+        if (m_voices[v].keyOnDelay > 0) {
+            m_voices[v].keyOnDelay -= numSamples;
+            if (m_voices[v].keyOnDelay <= 0) {
+                m_voices[v].keyOnDelay = 0;
+                completeKeyOn(v);
+            }
+        }
+    }
+
     int src = 0;  // Leseposition im Pending-Puffer
     for (int i = 0; i < numSamples; ++i) {
         // Cycles für diesen Output-Sample bestimmen (mit Fractional-Accum).
@@ -793,8 +814,10 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
             taken++;
         }
 
-        outputL[i] = m_filterL.process(static_cast<float>(sumL) / cycles * kScale) * m_masterGain;
-        outputR[i] = m_filterR.process(static_cast<float>(sumR) / cycles * kScale) * m_masterGain;
+        float rawL = static_cast<float>(sumL) / cycles * kScale;
+        float rawR = static_cast<float>(sumR) / cycles * kScale;
+        outputL[i] = m_filterL2.process(m_filterL1.process(rawL)) * m_masterGain;
+        outputR[i] = m_filterR2.process(m_filterR1.process(rawR)) * m_masterGain;
     }
 
     // --- Clip Detection ---
@@ -1000,14 +1023,47 @@ void COPMEmu::setupVoice(int voice, int note, int velocity, const DX21_Patch& pa
         m_voices[voice].isPorting = false;
     }
 
-    // Phase-reset click mask: ramp silence before KeyOn, then ramp to target
+    // Pre-KeyOn mute: set TL to max attenuation with OPP ramp.
+    // This ramps the output toward silence before the delayed KeyOn arrives.
+    // Combined with the free-running oscillator (no pg_inc masking during
+    // KeyOff), this ensures a smooth transition without phase freeze clicks.
+    // The KeyOn is delayed by kKeyOnDelay samples to give the TL ramp time
+    // to reach near-max attenuation, eliminating the note-on click.
     for (int op = 0; op < 4; ++op) {
         writeReg(0x60 + voice + OP_SLOT[op], 0xFF);  // ramp mute (soft)
     }
+
+    // Delay KeyOn: store pitch/TL data and send it after kKeyOnDelay samples.
+    // During the delay, the TL ramps toward max attenuation and the EG starts
+    // releasing, so the voice is nearly silent when KeyOn finally arrives.
+    m_voices[voice].keyOnDelay = kKeyOnDelay;
+
+
+}
+
+// ===========================================================================
+// completeKeyOn — send delayed KeyOn after TL ramp has reached silence.
+// Called from processBlock when the keyOnDelay countdown reaches 0.
+// ===========================================================================
+void COPMEmu::completeKeyOn(int voice)
+{
+    if (voice < 0 || voice >= kNumVoices) return;
+    if (!m_voices[voice].active) return;
+
+    const DX21_Patch* patch = nullptr;
+    Side side = (voice < 4) ? SideA : SideB;
+    if (m_playMode == Single) {
+        patch = getPatch(m_patchA);
+    } else {
+        patch = (side == SideA) ? getPatch(m_patchA) : getPatch(m_patchB);
+    }
+    if (!patch) return;
+
+    int transposed = m_voices[voice].note;
+
     // Compute balance TL offset based on side
     int tlOffset = 0;
     if (m_playMode != Single && m_balance != 50) {
-        Side side = (voice < 4) ? SideA : SideB;
         if (m_balance < 50 && side == SideA) {
             tlOffset = ((50 - m_balance) * 127) / 50;
         } else if (m_balance > 50 && side == SideB) {
@@ -1015,16 +1071,14 @@ void COPMEmu::setupVoice(int voice, int note, int velocity, const DX21_Patch& pa
         }
     }
 
-    // Step 1: Write KC/KF WITHOUT KeyOn (voice is still muted)
+    // Step 1: Write KC/KF WITHOUT KeyOn
     writeFrequency(voice, m_voices[voice].currentPitch, false);
 
     // Step 2: Apply target TL with OPP ramp (fade-in from silence)
-    applyTL(voice, patch, transposed, velocity, tlOffset);
+    applyTL(voice, *patch, transposed, m_voices[voice].velocity, tlOffset);
 
-    // Step 3: KeyOn LAST — operators start from sin-null with ramp already active
+    // Step 3: KeyOn LAST — operators start with TL near max, ramp fading in
     writeReg(0x08, OP_ALL | static_cast<uint8_t>(voice));
-
-
 }
 
 // ===========================================================================
