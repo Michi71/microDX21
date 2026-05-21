@@ -816,8 +816,8 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
 
         float rawL = static_cast<float>(sumL) / cycles * kScale;
         float rawR = static_cast<float>(sumR) / cycles * kScale;
-        outputL[i] = m_filterL2.process(m_filterL1.process(rawL)) * m_masterGain;
-        outputR[i] = m_filterR2.process(m_filterR1.process(rawR)) * m_masterGain;
+        outputL[i] = rawL * m_masterGain;
+        outputR[i] = rawR * m_masterGain;
     }
 
     // --- Clip Detection ---
@@ -844,7 +844,7 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
         }
     }
 
-    // --- Ensemble/Chorus effect ---
+    // --- Ensemble/Chorus effect & Final DSP Stage ---
     // DX21-style stereo chorus: 3 modulated delay lines with 120° phase offsets.
     // LFO1 ~0.5 Hz (slow vibrato), LFO2 ~3 Hz (fast shimmer, lower depth).
     // The mix of 85% slow + 15% fast creates a lush, organic chorus sound.
@@ -853,60 +853,64 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
     // correctly.  
     if (m_ensembleOn) {
         static constexpr float kTwoPi      = 6.2831853071795864f;
-        static constexpr float kLfo1Freq   = 0.5f;    // Hz - slow vibrato
-        static constexpr float kLfo2Freq   = 3.0f;    // Hz - fast shimmer
-        static constexpr float kLfo1Inc     = kLfo1Freq * kTwoPi / kSampleRate;  // radians/sample
-        static constexpr float kLfo2Inc     = kLfo2Freq * kTwoPi / kSampleRate;
-        static constexpr float kPhaseOffset1 = kTwoPi / 3.0f;      // 120 deg in radians
-        static constexpr float kPhaseOffset2 = kTwoPi * 2.0f / 3.0f; // 240 deg
-
-        // Delay parameters (at 48 kHz) - scaled from GS1 reference (180/60 at 34.6kHz)
-        static constexpr float kBaseDelay = 250.0f;   // ~5.2 ms base delay
-        static constexpr float kModDepth   = 85.0f;    // ~1.8 ms modulation depth
+        static constexpr float kLfo1Freq   = 0.5f;
+        static constexpr float kLfo2Freq   = 3.0f;
+        static constexpr float kLfo1Inc    = kLfo1Freq * kTwoPi / kSampleRate;
+        static constexpr float kLfo2Inc    = kLfo2Freq * kTwoPi / kSampleRate;
+        static constexpr float kPhaseOffset1 = kTwoPi / 3.0f;
+        static constexpr float kPhaseOffset2 = kTwoPi * 2.0f / 3.0f;
+        static constexpr float kBaseDelay = 250.0f;
+        static constexpr float kModDepth   = 85.0f;
 
         for (int i = 0; i < numSamples; ++i) {
-            // LFO modulation: 85% slow + 15% fast (phases in radians)
             float modA = 0.85f * sinf(m_lfo1Phase)                + 0.15f * sinf(m_lfo2Phase);
             float modB = 0.85f * sinf(m_lfo1Phase + kPhaseOffset1) + 0.15f * sinf(m_lfo2Phase + kPhaseOffset1);
             float modC = 0.85f * sinf(m_lfo1Phase + kPhaseOffset2) + 0.15f * sinf(m_lfo2Phase + kPhaseOffset2);
 
-            // Set modulated delay times
             m_delayA.setDelay(kBaseDelay + modA * kModDepth);
             m_delayB.setDelay(kBaseDelay + modB * kModDepth);
             m_delayC.setDelay(kBaseDelay + modC * kModDepth);
 
-            // Push dry signal into delay lines
-            m_delayA.pushSample(outputL[i]);
-            m_delayB.pushSample(outputL[i]);
-            m_delayC.pushSample(outputR[i]);
+            float dryL = outputL[i];
+            float dryR = outputR[i];
 
-            // Pop modulated signal from delay lines
-            float sampA = m_delayA.popSample();
-            float sampB = m_delayB.popSample();
-            float sampC = m_delayC.popSample();
+            m_delayA.pushSample(dryL);
+            m_delayB.pushSample(dryL);
+            m_delayC.pushSample(dryR);
 
-            // Stereo mix: L = dry/2 + A/2 - B*0.3, R = dry/2 + C/2 - B*0.3
-            outputL[i] = outputL[i] * 0.5f + sampA * 0.5f - sampB * 0.3f;
-            outputR[i] = outputR[i] * 0.5f + sampC * 0.5f - sampB * 0.3f;
+            // 1. Chorus Mix erstellen
+            float choL = dryL * 0.5f + m_delayA.popSample() * 0.5f - m_delayB.popSample() * 0.3f;
+            float choR = dryR * 0.5f + m_delayC.popSample() * 0.5f - m_delayB.popSample() * 0.3f;
 
-            // Advance LFO phases (radians, wrap at 2pi)
-            m_lfo1Phase += kLfo1Inc;
-            m_lfo2Phase += kLfo2Inc;
-            if (m_lfo1Phase >= kTwoPi) m_lfo1Phase -= kTwoPi;
-            if (m_lfo2Phase >= kTwoPi) m_lfo2Phase -= kTwoPi;
+            // 2. REKONSTRUKTIONSFILTER ERST HIER ANWENDEN (Fängt Chorus-Artefakte ab)
+            float filteredL = m_filterL2.process(m_filterL1.process(choL));
+            float filteredR = m_filterR2.process(m_filterR1.process(choR));
+
+            // 3. DC BLOCKER AM ABSOLUTEN ENDE
+            float outL = filteredL - m_dcLastInL + 0.998f * m_dcLastOutL;
+            float outR = filteredR - m_dcLastInR + 0.998f * m_dcLastOutR;
+            
+            m_dcLastInL = filteredL; m_dcLastOutL = outL;
+            m_dcLastInR = filteredR; m_dcLastOutR = outR;
+
+            outputL[i] = outL;
+            outputR[i] = outR;
+
+            m_lfo1Phase += kLfo1Inc; if (m_lfo1Phase >= kTwoPi) m_lfo1Phase -= kTwoPi;
+            m_lfo2Phase += kLfo2Inc; if (m_lfo2Phase >= kTwoPi) m_lfo2Phase -= kTwoPi;
         }
     } else {
-        // Fallback: Wenn Chorus AUS ist, nur den DC-Blocker über die gefilterten Samples jagen
-        // DC blocker (high-pass ~10 Hz at 48kHz).
+        // Fallback: Wenn Chorus AUS ist, Filter und DC-Blocker direkt nacheinander ausführen
         for (int i = 0; i < numSamples; i++) {
-            float inL = outputL[i];
-            float inR = outputR[i];
-            float outL = inL - m_dcLastInL + 0.998f * m_dcLastOutL;
-            float outR = inR - m_dcLastInR + 0.998f * m_dcLastOutR;
-            m_dcLastInL = inL;
-            m_dcLastInR = inR;
-            m_dcLastOutL = outL;
-            m_dcLastOutR = outR;
+            float filteredL = m_filterL2.process(m_filterL1.process(outputL[i]));
+            float filteredR = m_filterR2.process(m_filterR1.process(outputR[i]));
+
+            float outL = filteredL - m_dcLastInL + 0.998f * m_dcLastOutL;
+            float outR = filteredR - m_dcLastInR + 0.998f * m_dcLastOutR;
+            
+            m_dcLastInL = filteredL; m_dcLastOutL = outL;
+            m_dcLastInR = filteredR; m_dcLastOutR = outR;
+            
             outputL[i] = outL;
             outputR[i] = outR;
         }
