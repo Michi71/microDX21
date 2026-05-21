@@ -895,24 +895,21 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
             if (m_lfo1Phase >= kTwoPi) m_lfo1Phase -= kTwoPi;
             if (m_lfo2Phase >= kTwoPi) m_lfo2Phase -= kTwoPi;
         }
-    }
-
-    // --- DC Blocker ---
-    // Removes DC offset and ultra-low-frequency transients caused by
-    // instantaneous phase-reset clicks during rapid noteOns.
-    // IIR high-pass: y[n] = x[n] - x[n-1] + α·y[n-1]  (α≈0.999, ~7.6 Hz @ 48kHz)
-    static constexpr float kDCAlpha = 0.999f;
-    for (int i = 0; i < numSamples; ++i) {
-        float inL = outputL[i];
-        float inR = outputR[i];
-        float outL = inL - m_dcLastInL + kDCAlpha * m_dcLastOutL;
-        float outR = inR - m_dcLastInR + kDCAlpha * m_dcLastOutR;
-        m_dcLastInL = inL;
-        m_dcLastInR = inR;
-        m_dcLastOutL = outL;
-        m_dcLastOutR = outR;
-        outputL[i] = outL;
-        outputR[i] = outR;
+    } else {
+        // Fallback: Wenn Chorus AUS ist, nur den DC-Blocker über die gefilterten Samples jagen
+        // DC blocker (high-pass ~10 Hz at 48kHz).
+        for (int i = 0; i < numSamples; i++) {
+            float inL = outputL[i];
+            float inR = outputR[i];
+            float outL = inL - m_dcLastInL + 0.998f * m_dcLastOutL;
+            float outR = inR - m_dcLastInR + 0.998f * m_dcLastOutR;
+            m_dcLastInL = inL;
+            m_dcLastInR = inR;
+            m_dcLastOutL = outL;
+            m_dcLastOutR = outR;
+            outputL[i] = outL;
+            outputR[i] = outR;
+        }
     }
 
     // Unverbrauchte Pending-Daten an den Anfang des Puffers umkopieren,
