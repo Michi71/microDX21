@@ -1,0 +1,55 @@
+# ------------------------------------------------------------
+# VelvetKeys unified config.txt
+# ------------------------------------------------------------
+[all]
+boot_delay=0
+disable_splash=1
+force_eeprom_read=0
+gpu_mem=16
+disable_overscan=0
+
+# Ensure stable I2C baud rate by locking the core clock
+core_freq=250
+core_freq_min=250
+
+# Uncomment the following line to disable undervoltage/temperature 
+# warnings and throttling.
+# WARNING: Possible instability; use at your own risk! 
+# Use a heatsink!
+#avoid_warnings=2
+
+# ------------------------------------------------------------
+# Raspberry Pi 3 (64-bit)
+# ------------------------------------------------------------
+[pi3]
+arm_64bit=1
+kernel=kernel_rpi3.img
+
+# ------------------------------------------------------------
+# Raspberry Pi Zero 2 W (64-bit)
+# ------------------------------------------------------------
+[pi02]
+arm_64bit=1
+kernel=kernel_rpi3.img
+
+# Uncomment the following to overclock the Pi Zero 2 W 
+# to match the performance of the Pi 3B
+#arm_freq=1200
+#over_voltage=2
+
+# ------------------------------------------------------------
+# Raspberry Pi 4 / 400 (64-bit)
+# ------------------------------------------------------------
+[pi4]
+arm_64bit=1
+armstub=armstub8-rpi4.bin
+kernel=kernel_rpi4.img
+
+# ------------------------------------------------------------
+# Raspberry Pi 5 (64-bit)
+# ------------------------------------------------------------
+[pi5]
+arm_64bit=1
+kernel_address=0x80000
+kernel=kernel_rpi5.img
+

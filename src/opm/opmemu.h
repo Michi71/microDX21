@@ -89,6 +89,10 @@ struct EnsembleDelayLine {
 
 class COPMEmu {
 
+    // COPMEmuAdapter is the application-level wrapper that needs
+    // access to noteOn/noteOff, getPatch, writeVcedGlobal/Operator.
+    friend class COPMEmuAdapter;
+
 public:
     explicit COPMEmu(IFileSystem* fs = nullptr);
 
