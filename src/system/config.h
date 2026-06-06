@@ -1,5 +1,11 @@
 //
-// config.h – minimal für VelvetKeys
+// config.h – microDX21 application configuration
+//
+// Reads /boot/microdx21.ini (via FatFS) at boot. The CConfig class is
+// the single source of truth for every tweakable knob the user might
+// want to change on the SD card: audio backend, sample rate, MIDI
+// channel filter, USB host/gadget selection, master volume, OLED type
+// and pin assignment, rotary encoder GPIO.
 //
 
 #ifndef _config_h
@@ -13,10 +19,8 @@
 class CConfig
 {
 public:
-
-    static const unsigned MaxNotes     = 88; // see NVOICES in vkpiano.h
-    static const unsigned DefaultNotes = 64;
-
+    static const unsigned MaxNotes     = 88;  // hardware cap (YMF2164 OP chips)
+    static const unsigned DefaultNotes = 64;  // safe default for a Pi 3
     static const unsigned MaxChunkSize = 4096;
 
 public:
@@ -29,10 +33,10 @@ public:
     // ENGINE / AUDIO
     // ───────────────────────────────────────────────
     unsigned    GetPolyphony() const;
-    const char* GetSoundDevice() const;      // "pwm", "i2s", "hdmi"
+    const char* GetSoundDevice() const;      // "pwm" or "i2s"
     unsigned    GetSampleRate() const;
     unsigned    GetChunkSize() const;
-    unsigned    GetDACI2CAddress() const;    // 0 = auto
+    unsigned    GetDACI2CAddress() const;    // 0 = on-board PWM, else PCM5102A I2C addr
     bool        GetChannelsSwapped() const;
     bool        GetTestToneEnabled() const;
 
@@ -45,6 +49,21 @@ public:
     unsigned    GetMIDIChannel() const;
 
     // ───────────────────────────────────────────────
+    // USB
+    // ───────────────────────────────────────────────
+    // Returns false on RPi 5 (no gadget mode), otherwise the
+    // user-configured value from microdx21.ini.
+    bool IsUSBGadget() const
+    {
+#if RASPPI >= 5
+        return false;
+#else
+        return m_bUSBGadget;
+#endif
+    }
+    unsigned GetUSBGadgetPin() const { return m_nUSBGadgetPin; }
+
+    // ───────────────────────────────────────────────
     // MASTER VOLUME
     // ───────────────────────────────────────────────
     unsigned    GetMasterVolume() const;     // 0..127
@@ -53,7 +72,6 @@ public:
     // DISPLAY
     // ───────────────────────────────────────────────
     DisplayConfig GetDisplayConfig() const;
-
 
 private:
     CPropertiesFatFsFile m_Properties;
@@ -70,19 +88,6 @@ private:
     // USB
     bool        m_bUSBGadget;
     unsigned    m_nUSBGadgetPin;
-    bool        m_bUSBGadgetMode;
-
-public:
-    bool IsUSBGadget() const
-    {
-#if RASPPI >= 5
-        return false; // RPi 5 hat keinen USB-Gadget-Modus
-#else
-        return m_bUSBGadget;
-#endif
-    }
-    unsigned GetUSBGadgetPin() const { return m_nUSBGadgetPin; }
-    bool IsUSBGadgetModeComposite() const { return m_bUSBGadgetMode; }
 
     // MIDI
     unsigned    m_nMIDIBaudRate;
