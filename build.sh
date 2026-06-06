@@ -53,9 +53,6 @@ echo "Circle options: $OPTIONS"
 
 echo "Building Circle..."
 
-# Copy lv_conf.h to lvgl
-# cp src/lv_conf.h libs/circle-stdlib/libs/circle/addon/lvgl
-
 cd libs/circle-stdlib
 if [ -f Config.mk ]; then
     make mrproper
@@ -81,7 +78,6 @@ cd libs/circle/addon/Properties && make clean && make -j${NCPU}
 # cd ../wlan && make clean && make -j${NCPU}
 cd ../sensor && make clean && make -j${NCPU}
 cd ../display && make clean && make -j${NCPU}
-cd ../lvgl && make clean && make -j${NCPU}
 cd ../../../../../..
 
 # ───────────────────────────────────────────────

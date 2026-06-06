@@ -2,8 +2,6 @@
 # Synth_OPM.mk
 #
 # Build flags for the DX21 FM synthesizer engine (Nuked OPM / COPMEmu).
-# Replaces the former Synth_VKSynth.mk which targeted the sample-based
-# VKPiano engine.
 #
 
 OPM_DIR = ../src/opm

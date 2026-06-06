@@ -21,7 +21,6 @@ LIBS += \
 	$(CIRCLEHOME)/addon/SDCard/libsdcard.a \
 	$(CIRCLEHOME)/addon/display/libdisplay.a \
 	$(CIRCLEHOME)/addon/sensor/libsensor.a \
-	$(CIRCLEHOME)/addon/lvgl/liblvgl.a \
   	$(CIRCLEHOME)/lib/usb/libusb.a \
 	$(CIRCLEHOME)/lib/usb/gadget/libusbgadget.a \
  	$(CIRCLEHOME)/lib/input/libinput.a \
