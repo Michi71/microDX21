@@ -70,10 +70,6 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_memory(fs)
     , m_currentPatch(0)
     , m_sustainPedal(false)
-    , m_voiceAge(0)
-    , m_cycleAccum(0)
-    , m_staggerCount(0)
-    , m_pendingCount(0)
     , m_playMode(Single)
     , m_splitPoint(60)
     , m_balance(50)
@@ -93,7 +89,11 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_breathAmplitude(0)
     , m_breathEGBias(0)
     , m_breathEGDepth(0)
+    , m_voiceAge(0)
+    , m_cycleAccum(0)
+    , m_staggerCount(0)
     , m_sysexEditVoice(0)
+    , m_pendingCount(0)
 {
     for (int i = 0; i < kSysexNumParams; ++i) {
         m_sysexParam[i] = 0;
@@ -1552,7 +1552,7 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
     if (size < 7) return;
     if (data[0] != 0xF0 || data[1] != 0x43) return;
 
-    uint8_t deviceAndModel = data[2];  // 0n where n = device number
+    // uint8_t deviceAndModel = data[2];  // 0n where n = device number (currently unused)
     uint8_t modelId = data[3];
 
     // DX21 Parameter Change: F0 43 0n 12 pp vv F7
@@ -1740,6 +1740,111 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
     }
 }
 
+// ===========================================================================
+// writeVcedGlobal — Write global voice parameters (algorithm, feedback, LFO, etc.)
+// Maps DX21 VCED parameter indices to OPM registers.
+// Called from COPMEmuAdapter when parameter sliders change.
+// ===========================================================================
+void COPMEmu::writeVcedGlobal(int param, uint8_t value)
+{
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+
+    DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
+    if (!ramPatch) return;
+
+    switch (param) {
+        case 0: // Algorithm (0-7)
+            ramPatch->alg = value & 0x07;
+            writeField(0x20 + voice, 0, 3, ramPatch->alg);
+            break;
+        case 1: // Feedback (0-7)
+            ramPatch->fb = value & 0x07;
+            writeField(0x20 + voice, 3, 3, ramPatch->fb);
+            break;
+        case 6: // LFO Speed (0-255)
+            ramPatch->lfo_speed = value;
+            writeReg(0x18, ramPatch->lfo_speed);
+            break;
+        case 7: // LFO Delay (0-127)
+            ramPatch->lfo_delay = value & 0x7F;
+            // Note: LFO delay is not a direct OPM register, stored in patch only
+            break;
+        case 8: // PMD (Pitch Mod Depth, 0-127)
+            ramPatch->pmd = value & 0x7F;
+            writeReg(0x19, (ramPatch->pmd & 0x7F) | 0x80);
+            break;
+        case 9: // AMD (Amplitude Mod Depth, 0-127)
+            ramPatch->amd = value & 0x7F;
+            writeReg(0x19, ramPatch->amd & 0x7F);
+            break;
+        case 10: // LFO Sync (0 or 1)
+            ramPatch->lfo_sync = value & 0x01;
+            // Note: LFO sync is not directly programmable on YM2151, internal behavior
+            break;
+        case 11: // LFO Waveform (0-3: tri, saw, square, s/h)
+            ramPatch->lfo_wave = value & 0x03;
+            writeField(0x1B, 0, 2, ramPatch->lfo_wave);
+            break;
+        default:
+            break;
+    }
+}
+
+// ===========================================================================
+// writeVcedOperator — Write per-operator parameters (AR, D1R, D1L, OUT, CRS)
+// Maps DX21 VCED parameter indices to OPM registers.
+// Called from COPMEmuAdapter when per-op sliders change.
+// ===========================================================================
+void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
+{
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+    if (op < 0 || op >= 4) return;
+
+    DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
+    if (!ramPatch) return;
+
+    DX21_Operator& o = ramPatch->op[op];
+    int slot = voice + OP_SLOT[op];
+
+    switch (param) {
+        case 0: // AR (Attack Rate, 0-31)
+            o.ar = value & 0x1F;
+            writeField(0x80 + slot, 0, 5, o.ar);
+            break;
+        case 2: // D1R (Decay1 Rate, 0-31)
+            o.d1r = value & 0x1F;
+            writeField(0xA0 + slot, 0, 5, o.d1r);
+            break;
+        case 8: // D1L (Decay1 Level, 0-15)
+            o.d1l = value & 0x0F;
+            {
+                uint8_t d1l = 15 - (o.d1l & 0x0F);
+                uint8_t rr = o.rr & 0x0F;
+                uint8_t d1l_rr = (d1l << 4) | rr;
+                writeReg(0xE0 + slot, d1l_rr);
+            }
+            break;
+        case 10: // OUT (Output Level, 0-99)
+            o.out = value;
+            {
+                uint8_t tl = (99 - o.out) * 127 / 99;
+                if (tl > 127) tl = 127;
+                writeReg(0x60 + slot, 0x80 | (tl & 0x7F));
+            }
+            break;
+        case 11: // CRS (Coarse Ratio, 0-63)
+            o.crs = value & 0x3F;
+            {
+                uint8_t mul = CRS_TO_MUL[o.crs & 0x3F];
+                writeField(0x40 + slot, 0, 4, mul);
+            }
+            break;
+        default:
+            break;
+    }
+}
 
 // ===========================================================================
 // setSysexEditVoice — select which voice slot receives real-time parameter changes

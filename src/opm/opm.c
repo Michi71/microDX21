@@ -29,6 +29,9 @@
 #include <stdint.h>
 #include "opm.h"
 
+/* Suppress unused variable warnings in Nuked-OPM reference implementation */
+#pragma GCC diagnostic ignored "-Wunused-variable"
+
 enum {
     eg_num_attack = 0,
     eg_num_decay = 1,
