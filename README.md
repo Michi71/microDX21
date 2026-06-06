@@ -1,374 +1,375 @@
 # microDX21 — Yamaha DX21 Emulator
 
-A real-time FM synthesizer emulator based on the **Nuked OPM** (YM2151/YM2164) core, faithfully modelling the Yamaha DX21's sound engine. Written in C++17, targets macOS for development and **Raspberry Pi** for deployment.
+A real-time FM synthesizer that runs the original **Yamaha DX21** voice/play engine on bare-metal **Raspberry Pi 3/4/5** (Circle stdlib, no Linux) and on **macOS/PC** for development. The synth core is the C-port of **Nuked OPM** (YM2164/OPP mode), giving a cycle-accurate YM2151-compatible FM engine with the DX21's voice architecture.
 
-> ⚠️ **Active Development** — This project now includes full DX21 performance features: Single/Dual/Split play modes, Mono/Glide, Pitch Bend, Portamento, SysEx editing, and 32 RAM voice + performance memory banks.
-
----
-
-## What It Does
-
-### DX21 Voice Engine
-- **128 DX21 factory patches** in ROM — full VCED parameter set (AR, D1R, D2R, RR, D1L, LS, RS, KVS, OUT, CRS, DET, AME, EBS, ALG, FB, LFO, PMS, AMS, key offset)
-- **32 editable RAM voice slots** — modify via SysEx or load/save as JSON banks
-- **YM2164 (OPP) mode** — uses `opm_flags_ym2164` for authentic TL-ramping and register-timing behaviour
-- **Per-operator OPP attack-rate slowdown** — models the YM2164's AR=18–30 plateau (from [nuked-opp-xcent](https://github.com/Knives-On-Strings/nuked-opp-xcent))
-
-### Play Modes & Performance
-- **SINGLE** — 1 patch, 8-voice polyphony
-- **DUAL** — 2 patches simultaneously (4+4 voices), with detune and A/B balance
-- **SPLIT** — 2 patches split by keyboard zone (4+4 voices), programmable split point
-- **MONO mode** — last-note-priority monophonic with legato support (per side in Split)
-- **Portamento** — Full Time or Fingered (legato-only), 0–99 rate
-- **Pitch Bend** — 14-bit MIDI, 0–12 semitone range, with Low/High/K-on modes
-- **Master Tune** — ±1 semitone (-64…+63 cents)
-- **32 Performance Memories** — store complete performance state (mode, patches, split, balance, PB, portamento, chorus, transpose)
-
-### Effects & Output
-- **Stereo Ensemble/Chorus** — 3 modulated delay lines with 2 LFOs (0.5 Hz + 3 Hz), 120° phase offsets, scaled from the GS1 reference
-- **10 kHz DAC reconstruction filter** — 2nd-order Butterworth biquad emulating the analog filter at the YM2151/YM2164 DAC output
-
-### MIDI & SysEx
-- **Lock-free SPSC MIDI queue** — atomic ring buffer for thread-safe MIDI → audio handoff
-- **Real-time SysEx parameter change** — DX21-compatible `F0 43 0n 12 pp vv F7` format edits any VCED parameter live
-- **SysEx bulk import/export** — DX21 32-voice VCED dump compatibility
-- **Breath Controller** (CC#2) — pitch bias, amplitude, EG bias mapping
-- **Modulation Wheel** (CC#1) → LFO PMD
-- **Sustain Pedal** (CC#64)
+> **Status**: Synth engine, MIDI, SysEx, and play modes are stable. The UI is a minimal 128×32 SSD1305/SH1106 OLED + KY-040 rotary encoder; on-device parameter editing follows the original DX21's mode structure.
 
 ---
 
-## Architecture
+## What's in the box
 
-```
-MIDI Input ──► SPSC Ring Buffer ──► processMidiBuffer() ──► writeReg/clockChip
-                   (512 events)          (audio thread)       │
-                                                              ▼
-                                                     Pending Audio Buffer
-                                                      (32768 cycles, carried over)
-                                                              │
-                                                              ▼
-                              OPM Chip (Nuked, YM2164/OPP mode) ──► DAC stream
-                                                              │
-                                                              ▼
-                                                    Biquad LPF (10 kHz)
-                                                              │
-                                                     ┌────────┴────────┐
-                                                     ▼                 ▼
-                                              Delay A,B,C      Delay A,B,C
-                                              (LFO-modulated)  (LFO-modulated)
-                                                     │                 │
-                                                     ▼                 ▼
-                                              Stereo Ensemble    Direct Out
-                                                     │                 │
-                                                     └────────┬────────┘
-                                                              ▼
-                                                       Audio Output
-                                                      (48 kHz, stereo float)
-```
+### DX21 voice engine (`src/opm/`)
+- **128 DX21 factory patches** as C++ data (full VCED parameter set: AR, D1R, D2R, RR, D1L, LS, RS, KVS, OUT, CRS, DET, AME, EBS, ALG, FB, LFO, PMS, AMS, key offset).
+- **YM2164 (OPP) mode** — uses `opm_flags_ym2164` for authentic TL-ramping and per-AR plateau (AR=18–30) from `nuked-opp-xcent`.
+- **Phase-reset disabled** for click-free KeyOn (the standard Nuked OPM `pg_phase=0` reset causes audible click on polyphonic note transitions; the OPP TL-ramp bit-7 of reg 0x60 covers the fade-in).
+- **DAC mix-div / kScale** — gives 12 dB of headroom before the YM2151's 10-bit DAC, prevents hard clipping with 8 active voices at full output.
+- **Lock-free SPSC MIDI ring buffer** between MIDI thread and audio ISR; SysEx goes through a deferred queue.
+- **DX21-compatible SysEx real-time parameter change** (`F0 43 0n 12 pp vv F7`) for live editing of any VCED byte.
+- **32-voice VCED bulk dump** import/export.
+- **3-line modulated stereo ensemble/chorus** with 0.5 Hz + 3 Hz dual LFO, 120° phase offsets.
+- **10 kHz Butterworth biquad** reconstruction filter on the DAC output.
+- **Real-time pitch bend** via per-voice KC/KF updates, **portamento** via per-sample pitch interpolation, **breath controller** (CC#2), **mod wheel** (CC#1), **sustain** (CC#64).
 
-### Voice Management
+### Play modes
+- **SINGLE** — 8-voice polyphony, 1 patch
+- **DUAL** — 4+4 voices, A/B balance
+- **SPLIT** — 4+4 voices left/right of split point
+- **MONO** — last-note-priority, legato, per side in SPLIT
 
-| Mode | Side A | Side B | Patches | Notes |
-|------|--------|--------|---------|-------|
-| **Single** | Voices 0–7 | — | Patch A | 8-voice polyphony |
-| **Dual** | Voices 0–3 | Voices 4–7 | Patch A + B | Simultaneous layers, A/B balance |
-| **Split** | Voices 0–3 | Voices 4–7 | Patch A + B | Left/right of split point |
-
-In **MONO** mode, each side is limited to 1 voice (last-note-priority). In Split mode, this allows one polyphonic and one monophonic side (e.g., bass + lead).
-
-### Key Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| **applyPatch at program-change time** | Only per-note writes are TL (4×), KC, KF, KeyOn (3×) = 7 writes ≈ 280 cycles. Reduces audio loss per noteOn by ~75% vs 26-register applyPatch |
-| **TL ramp-in on noteOn** | Before KeyOn, all 4 TL registers set to 0xFF (max attenuation + OPP ramp). Target TL then transitions smoothly from silence (~2 ms fade-in), masking phase-reset click |
-| **Voice-steal smooth fade** | KeyOff + TL=max + RR=15 for stolen voices. OPP ramp ensures no audible click when stealing |
-| **Pending-audio carry-over** | Unconsumed OPM cycles from MIDI processing are preserved across `processBlock()` calls via `memmove`, preventing audio gaps for small audio buffers |
-| **LFO phases in radians** | `sinf()` requires radians; 0…1 range only covered ~57° of the sine wave, making chorus barely audible |
-| **Pitch Bend via KC/KF** | YM2151 has no native pitch bend. KC/KF are updated in real-time for all active voices with sub-semitone resolution |
-| **Portamento on audio thread** | `updatePortamento()` runs in `processBlock()`, interpolating pitch per-sample and writing KC/KF. Smooth, glitch-free glides |
+### 32 Performance memories
+Each stores: play mode, voice A/B, split point, balance, PB range, PB mode, portamento mode/rate, mod sensitivity, breath mappings, chorus, transpose, key shift, name. Save/load as JSON via the SD card; 32 RAM voice slots likewise.
 
 ---
 
-## VCED → YM2151 Register Mapping
+## Hardware
 
-The DX21's VCED parameters don't map 1:1 to YM2151 registers. Key conversions:
-
-| DX21 Parameter | YM2151 Register | Conversion |
+### Target (Raspberry Pi bare-metal, Circle)
+| Component | Required | Notes |
 |---|---|---|
-| DET (0–6: −3…+3) | DT1[6:4] | `{7,6,5,0,1,2,3}[det]` — negative half maps to DT1 5–7 |
-| CRS (0–63) | MUL[3:0] | Lookup table: 0→0, 1→1, 2→2, 3→3, 4→4, 5→5, 6→6, 7→8, … 63→15 |
-| OUT (0–99) | TL[6:0] | `tl = (99 - out) * 127 / 99` |
-| D1L (0–15) | D1L[7:4] | `15 - d1l` — DX21 inverts the direction |
-| LS (0–99) | TL offset | Per-note: `atten = ls * (note - 60) * 127 / (99 * 48)` |
-| KVS (0–7) | TL offset | Per-note: velocity-sensitive attenuation |
-| ALG (0–7) | CON[2:0] | Direct mapping |
-| Key Offset | KC octave shift | Transposed note used for KC, original note for voice lookup |
+| Raspberry Pi 3, 4, or 5 | yes | bare-metal, no Linux |
+| microSD card | yes | for boot firmware + config |
+| USB-MIDI device (or USB host + MIDI keyboard) | yes | for Note input |
+| I2S DAC **or** PWM audio out | yes | PCM5102A recommended for I2S |
+| OLED display (SSD1306/SSD1305/SH1106, I2C or SPI) | optional | without it the synth still works (headless) |
+| KY-040 rotary encoder | optional | for the new UI; without it use MIDI CC instead |
 
-### KC Note Code Mapping
-
-The YM2151 uses only 12 of 16 possible 4-bit note codes — values 3, 7, 11, 15 produce non-chromatic frequencies. The valid nibbles per octave:
-
-```
-Nibble:  0    1    2    4    5    6    8    9   10   12   13   14
-Note:    C#   D   D#    E    F    F#   G    G#  A    A#    B    C
-```
-
-C sits at the **top** of each chip octave (nibble 14), so the octave boundary falls between C and C#. This is handled by computing `octave = (note - 1) / 12 - 1`, which correctly maps MIDI 60 → KC 0x3E (C4), MIDI 69 → KC 0x4A (A4 = 440 Hz).
+### macOS dev host
+- Apple Silicon (M1/M2/M3/M4) or Intel
+- CMake 3.10+, SDL2, PortMidi (for `test/standalone.cpp`)
+- ARM cross-toolchain (only for building the Pi image, not for `standalone`)
 
 ---
 
-## Performance Parameters
+## UI
 
-All performance parameters are stored in 32 **Performance Memories** and can be saved/loaded as JSON:
+A minimal 128×32 SSD1305/SH1106 OLED + a single KY-040 rotary encoder. The display layout mirrors the original DX21's HD44780 2×16 character LCD, scaled to 128×32 pixels:
 
-| Parameter | Range | Description |
-|-----------|-------|-------------|
-| Play Mode | Single/Dual/Split | Voice allocation strategy |
-| Voice A / Voice B | 0–127 | Patch indices |
-| Split Point | 0–127 | MIDI note for Split mode |
-| A/B Balance | 0–99 | 50 = center, lower = quieter A, higher = quieter B |
-| Pitch Bend Range | 0–12 | Semitones |
-| PB Mode | All/Low/High/K-on | Which note receives pitch bend |
-| Portamento Mode | Off/Full/Fingered | Glide behaviour |
-| Portamento Rate | 0–99 | Glide speed |
-| Modulation Sensitivity | 0–99 | Mod wheel depth scaling |
-| Breath Pitch/Amplitude/EG | 0–99 | Breath controller mappings |
-| Chorus | On/Off | Ensemble effect |
-| Transpose | -24…+24 | Global semitone shift |
-| Key Shift | -24…+24 | Instant transpose (like DX21's KEY SHIFT button) |
+```
+┌──────────────────────────────────────────┐
+│  EDIT  3/36                  (page 0)    │  ← mode title + cursor
+│   7                             (page 1)  │  ← 7-seg big value (8×16)
+│  FEEDBACK                       (page 2)  │  ← parameter name
+│  MEMORY PROTECTED              (page 3)  │  ← status / unit
+└──────────────────────────────────────────┘
+```
+
+- **CDX21Display** (`src/display/display_dx21.{h,cpp}`) wraps `CSSD1305SPIDisplay` from `libdisplay2` and renders 5 modes (PLAY, EDIT, PERFORMANCE, FUNCTION, MEMORY) + a COMPARE overlay. Mode title on top row, 7-segment-style large value (8×16) in the middle, parameter name and status on the bottom two rows.
+- **CDX21Input** (`src/display/dx21_input.{h,cpp}`) wraps the Circle sensor-addon's `CKY040` (ISR-driven, with switch debounce, single/double/triple-click, hold detection). The mapping:
+  - rotate CW/CCW → next/prev parameter
+  - single click → cycle mode (PLAY → EDIT → PERFORM → FUNCTION → MEMORY → PLAY)
+  - double click → COMPARE toggle
+  - long press → memory-protect toggle
+- **Strings** are extracted from the original ROM V1.5 firmware (`src/opm/firmware/dx21_rom_v1_5.asm`): 36 EDIT-mode parameter labels, 46 FUNCTION-mode menu items, 6 PLAY labels, ON/OFF, note names, tape-dialog labels, MIDI status. All in `src/opm/dx21_ui_strings.h`.
+- **7-segment font** (8×16, hand-coded segment-mask composition) in `src/opm/dx21_ui_7seg.h` evokes the original DX21's 7-segment LED look.
 
 ---
 
-## SysEx Real-Time Parameter Change
+## Build
 
-The emulator supports DX21-compatible SysEx parameter changes for live editing:
-
-### Parameter Change
-```
-F0 43 0n 12 pp vv F7
-```
-- `n` = device number (0–15, ignored)
-- `12` = DX21 model ID
-- `pp` = parameter number (0–75, VCED byte index)
-- `vv` = value (0–127)
-
-**Examples:**
-- `F0 43 00 12 00 05 F7` → Algorithm = 5 for edit voice
-- `F0 43 00 12 0A 1F F7` → OP1 AR = 31
-- `F0 43 00 12 48 50 F7` → Name char 'P' (ASCII 0x50)
-
-### Bulk Dump (32 Voices)
-```
-F0 43 0n 09 bb cc ...data... ss F7
-```
-- Imported into the 32 RAM voice slots via `CDX21Memory::importSysex()`
-- Exported via `CDX21Memory::exportSysex()`
-
-### Edit Voice
-
-Use `setSysexEditVoice(0..7)` to select which voice slot receives parameter changes. Default: voice 0.
-
----
-
-## Ensemble / Chorus Effect
-
-Based on the GS1 ensemble implementation, adapted for 48 kHz:
-
-- **3 modulated delay lines** with 120° phase offsets for stereo width
-- **2 LFOs**: 0.5 Hz (slow vibrato, 85% depth) + 3.0 Hz (fast shimmer, 15% depth)
-- **Base delay**: 250 samples (~5.2 ms) — scaled from GS1 reference at 34.6 kHz
-- **Modulation depth**: 85 samples (~1.8 ms) — subtle shimmer without pitch wobble
-- **Stereo mix**: `L = dry/2 + A/2 − B·0.3`, `R = dry/2 + C/2 − B·0.3`
-
----
-
-## Build & Run
-
-### Prerequisites
-
-- CMake 3.10+
-- C++17 compiler (Clang/GCC)
-- SDL2
-- PortMidi
-
-### Build
+### macOS standalone (development, with audio + MIDI)
+For working on the synth engine, MIDI handling, and SysEx without touching the Pi toolchain. Uses SDL2 for audio and PortMidi for MIDI I/O. This is what you use to iterate on `opmemu.cpp`.
 
 ```bash
 cd microDX21
 mkdir -p build && cd build
 cmake ..
 make
-```
-
-### Run
-
-```bash
 ./standalone
 ```
 
-### Controls (Keyboard)
-
+Controls (in `standalone`):
 | Key | Action |
 |---|---|
-| `s` / `d` / `p` | Play Mode: Single / Dual / Split |
+| `s` / `d` / `p` | Play mode: Single / Dual / Split |
 | `m` | Toggle Mono |
 | `+` / `-` | Patch A next / prev |
 | `a` / `b` | Patch B next / prev |
-| `[` / `]` | Split Point -1 / +1 |
+| `[` / `]` | Split point -1 / +1 |
 | `<` / `>` | Balance -1 / +1 |
-| `l` / `h` / `k` / `0` | PB Mode: Low / High / K-on / All |
-| `r` | Pitch Bend Range cycle (0–12) |
-| `o` | Portamento Mode cycle (Off/Full/Fingered) |
-| `O` / `P` | Portamento Rate +5 / -5 |
-| `t` / `T` | Master Tune -1 / +1 cent |
-| `e` | Toggle ensemble/chorus |
-| `0`–`9` | Apply Performance Memory 0–9 |
-| `S` | Save RAM bank to `ram_bank/` |
-| `L` | Load RAM bank from `ram_bank/` |
-| `?` / `/` | Print status |
+| `r` | Pitch bend range cycle |
+| `o` | Portamento mode cycle |
+| `O` / `P` | Portamento rate +5 / -5 |
+| `t` / `T` | Master tune -1 / +1 cent |
+| `e` | Toggle chorus |
+| `0`–`9` | Apply performance memory 0–9 |
+| `S` / `L` | Save/load RAM bank to/from `ram_bank/` |
 | `q` | Quit |
 
-### MIDI Input
+### Raspberry Pi bare-metal image
+Cross-compile the `kernel8.img` (Pi 3) / `kernel8-rpi4.img` (Pi 4) / `kernel_2712.img` (Pi 5) using the ARM GNU toolchain. The build script does the full thing: builds `libs/circle-stdlib`, the sensor + display add-ons, `libdisplay2`, and the synth.
 
-- **Note On/Off** — polyphonic, velocity-sensitive
-- **CC#1** — Modulation Wheel → LFO PMD
-- **CC#2** — Breath Controller → pitch/amplitude/EG bias
-- **CC#64** — Sustain Pedal
-- **Pitch Bend** — 14-bit, range configurable
-- **Program Change** — select patch A
-- **SysEx** — real-time parameter change or bulk dump
+```bash
+# ARM toolchain expected at:
+#   /usr/local/arm-gnu-toolchain-14.3.rel1-<host>-aarch64-none-elf/bin
+# (Adjust build-mac.sh:62 if your path differs)
+
+RPI=3 ./build.sh            # → out/kernel_rpi3.img
+RPI=4 ./build.sh            # → out/kernel_rpi4.img
+RPI=5 ./build.sh            # → out/kernel_rpi5.img
+
+# Or, with the interactive script:
+./build-mac.sh --rpi 3
+```
+
+The `RPI=1,2` builds use the 32-bit toolchain (`arm-none-eabi-`); `RPI=3,4,5` use the 64-bit one (`aarch64-none-elf-`).
+
+#### What happens under the hood
+1. `libs/circle-stdlib/configure` — produces `Config.mk` with the right `ARCH`, `RASPPI`, `CFLAGS_FOR_TARGET`.
+2. `make -j` in `libs/circle-stdlib` — builds `libcircle.a`, `libsensor.a` (for CKY040), `libdisplay.a` (HD44780/SSD1306 chardev), `libfatfs.a`, `libusb.a`, etc.
+3. `make` in `libs/circle-stdlib/libs/circle/addon/Properties` and `…/sensor` and `…/display` — builds the add-on archives.
+4. `make` in `libs/libdisplay2` — builds the modern `libdisplay2.a` (CSSD1305SPIDisplay etc.) used by `CDX21Display`.
+5. `make` in `src` — builds `microdx21` against everything, produces `kernel8.img`.
+
+`src/Makefile` reads `CFLAGS_FOR_TARGET` from `Config.mk` (via `src/Rules.mk` → `libs/circle-stdlib/Config.mk`) and adds `-DAARCH=64 -mcpu=cortex-a53 -mlittle-endian -D__circle__ -DRASPPI=N -DREALTIME -DSAVE_VFP_REGS_ON_IRQ -DARM_ALLOW_MULTI_CORE` automatically.
+
+#### Multi-core layout (Pi 3/4/5 with `ARM_ALLOW_MULTI_CORE`)
+| Core | Role |
+|---|---|
+| 0 | USB Plug-and-Play poll, MIDI, audio DMA-IRQ consumer |
+| 1 | Audio generation (fills the lock-free ringbuffer) |
+| 2 | OLED render (~30 Hz) + encoder event drain |
+| 3 | Deferred work: SysEx, preset load, file I/O |
+
+The `m_audioPaused` atomic pauses DMA output during preset load so SD I/O doesn't corrupt the audio stream.
 
 ---
 
-## API
+## Configuration (`config/microdx21.ini`)
 
-```cpp
-#include "opmemu.h"
-#include "io/std_filesystem.h"  // or fatfs_filesystem.h for embedded
+Properties are read by `CConfig` at boot. Defaults are sensible; copy `config/microdx21.ini` to the boot partition of the SD card and edit. **Only the keys that the firmware actually reads are listed below** — every other key in the file is silently ignored.
 
-// Construction with IFileSystem for load/save
-StdFileSystem fs;
-COPMEmu emu(&fs);
-emu.Initialize();
-emu.initRamFromRom();  // copy ROM patches into RAM slots
-
-// Performance setup
-emu.setPlayMode(COPMEmu::Dual);
-emu.setPatchA(0);    // ROM patch 0
-emu.setPatchB(42);   // ROM patch 42
-emu.setBalance(50);  // center
-emu.setMono(false);
-
-// Real-time parameters
-emu.setPitchBendRange(2);
-emu.setPortamentoMode(COPMEmu::PortaFullTime);
-emu.setPortamentoRate(30);
-emu.setMasterTune(0);
-
-// Select edit voice for SysEx
-emu.setSysexEditVoice(0);
-
-// Audio callback — call from your audio thread
-emu.processBlock(outputL, outputR, numSamples);
-
-// MIDI — call from your MIDI thread (lock-free SPSC queue)
-emu.processMidi(midiData, midiLength);
-
-// Memory management
-emu.loadRamBank("ram_bank");
-emu.saveRamBank("ram_bank");
-emu.loadPerformanceBank("performances.json");
-emu.savePerformanceBank("performances.json");
-
-// Apply a performance memory
-emu.applyPerformance(3);  // load performance slot 3
-
-// Query
-int numPrograms = emu.getNumPrograms();           // 128
-const char* name = emu.getProgramName(index);       // "Deep Grand"
-bool ensemble = emu.getEnsembleOn();
+### Audio
+```ini
+SoundDevice=i2s              # pwm | i2s | usb
+SampleRate=48000
+ChunkSize=256
+DACI2CAddress=0              # 0 = on-board PWM, otherwise PCM5102A I2C addr
+MasterVolume=32
 ```
 
-All public methods are safe to call from any thread — the MIDI queue, program-change atomics, and SysEx dirty-flags handle the thread boundary internally.
+### Display (new UI)
+```ini
+# 128x32 SSD1305 SPI OLED on SPI0
+DisplayType=ssd1305
+DisplayBus=spi
+DisplayWidth=128
+DisplayHeight=32
+DisplaySPIDCPin=24
+DisplaySPIResetPin=25
+DisplaySPISpeed=8000000
 
----
+# SH1106 I2C 128x64 (alternative)
+# DisplayType=sh1106
+# DisplayBus=i2c
+# DisplayI2CAddress=0x3C
 
-## File Structure
-
+# KY-040 rotary encoder (BCM pin numbers)
+EncoderPinA=10               # CLK
+EncoderPinB=9                # DT
+EncoderPinBtn=11              # SW
 ```
-src/opm/
-├── opm.c                    Nuked OPM emulation (+ attack-skip patch, **phase-reset disabled for click-free KeyOn**)
-├── opm.h                    Nuked OPM header (+ opp_atk_skip fields, SetAttackSkip API)
-├── opmemu.cpp               DX21 emulator engine (voice management, effects, MIDI)
-├── opmemu.h                 Public API, filters, delays, MIDI queue, performance state
-├── patches.h                128 DX21 factory patches (full VCED parameter set)
-├── memory/
-│   ├── dx21_memory.h        CDX21Memory: 32 RAM slots + 32 performances + SysEx
-│   └── dx21_memory.cpp      JSON persistence, SysEx VCED encode/decode
-└── io/
-    ├── ifilesystem.h        IFileSystem interface (read/write/list)
-    ├── std_filesystem.h     std::filesystem implementation (PC/macOS)
-    └── fatfs_filesystem.h   FatFS implementation (embedded / Circle)
 
-test/
-└── standalone.cpp           SDL2 + PortMidi interactive test application
+### MIDI / USB
+```ini
+# MIDIChannel=0                 # 0 = Omni, 1..16 = specific
+USBGadget=0                  # 0 = USB Host (DIN-MIDI on USB-A adapter),
+                             # 1 = USB Gadget (Pi appears as USB MIDI device to host)
+USBGadgetPin=23              # VBUS-detect GPIO for Gadget/Host decision
 ```
 
 ---
 
-## Core Modifications
+## Flashing the Pi
 
-### Nuked OPM Click Fix (Phase-Reset)
-The original Nuked OPM core resets operator phase to 0 on every KeyOn (`pg_phase[slot] = 0`). On the real YM2151/YM2164, this causes a transient click because `logsinrom[0] = 0x859` (maximum amplitude). In a polyphonic context with fast note transitions (glissando, piano staccato), this produces audible crackling.
-
-**Fix**: In `OPM_PhaseGenerate()`, the phase-reset block is commented out:
-```c
-if (chip->pg_reset_latch[slot] || chip->mode_test[3])
-{
-    // Phase reset disabled to prevent KeyOn clicks
-    // chip->pg_phase[slot] = 0;
-}
+```bash
+# 1. Format SD card as FAT32 (single partition)
+# 2. Copy Raspberry Pi boot firmware (bootcode.bin, start.elf, fixup.dat for Pi 3; or
+#    the equivalent files for Pi 4/5 from the Raspberry Pi firmware repo)
+# 3. Copy microDX21 kernel
+sudo cp out/kernel_rpi3.img /boot/kernel_rpi3.img
+# 4. Copy config
+sudo cp config/config.txt /boot/config.txt
+sudo cp config/cmdline.txt /boot/cmdline.txt
+sudo cp config/microdx21.ini /boot/microdx21.ini
+# 5. (Optional) Plug a USB-MIDI keyboard into the Pi's USB-A port
+# 6. Boot, watch serial console at 115200 baud on GPIO14/15 (TX/RX)
 ```
-The phase now free-runs continuously. The OPP TL-ramp (bit 7 of register 0x60) provides smooth fade-in/out transitions. This is the definitive fix — previous attempts (TL-ramp, DC blocker, staggered KeyOns, per-voice soft-attack envelope, chip-internal mute counter) did not fully solve the problem.
 
-### OPP Attack-Rate Skip
-Per `nuked-opp-xcent`, the YM2164 has a plateau in AR=18–30 where attack times are ~105–115 ms (between OPM AR=12 and AR=13). This is modelled by skipping every Nth attack increment tick via `OPM_SetAttackSkip()`.
-
-### DAC Anti-Clipping (mix_div)
-The YM2151/YM2164 DAC has a limited dynamic range (≈±32 K). With 8 active voices, the internal `mix[]` accumulator overflows the DAC's floating-point mantissa, causing hard digital clipping *inside* the DAC. Reducing the output gain (`kScale`) doesn't help — it's applied after clipping, making the signal quieter but still distorted.
-
-**Fix**: A `mix_div` field (2 bits) was added to the `opm_t` struct. The per-operator contribution to `mix[]` is right-shifted by `mix_div` bits *before* DAC serialization, gaining 6 dB of headroom per shift. The output gain `kScale` compensates so the perceived level stays the same.
-
-- `mix_div = 2` (fixed, always active) — 12 dB headroom, prevents clipping for up to 8 voices at full output
-- `kScale = 1/32768` — compensates for the /4 shift in the DAC path
-- Quantization noise from the 2-bit truncation: ≈−120 dB, far below the DAC's own ≈−78 dB noise floor
-
-A dynamic `mix_div` (0/1/2 depending on voice count) was tested first but caused audible gain jumps when voices were added/removed. The fixed `mix_div = 2` avoids this entirely.
-
-### Voice Stealing & Muting
-- `freeVoice()` now writes `TL=0xFF` (ramp mute) instead of `0x7F` (instant mute) for softer voice release.
-- Stolen voices get `KeyOff` + `TL=0xFF` (ramp) + `RR=15` (fast release) instead of instant cut.
-- In `setupVoice()`, operators are ramp-muted before KeyOn, then faded in via OPP TL-ramp.
-
-### Output Gain
-`setMasterGain(float)` / `getMasterGain()` provides a global output gain multiplier (0.0–8.0, default 3.0) applied after the reconstruction filter. The default of 3.0 (+9.5 dB) compensates for the internal headroom scaling — typical DX21 patches land at around −15 dBFS for a single voice and −6 dBFS for 4–8 voices.
+A typical serial session looks like:
+```
+microDX21 starting...
+Audio: i2s 48000Hz ChunkSize=256 DACAddr=0x00
+Initializing cores...
+System has 4 cores
+128x32 SSD1305 SPI display ready (DC=24 RST=25 CS=0 @8000000 Hz)
+KY-040 ready (CLK=17 DT=27 SW=22 mode=ISR detents=4)
+Initialize OK
+Core 0: MIDI + USB PnP
+Core 1: Audio Generation
+Core 2: Display + Encoder
+Core 3: Deferred Work
+```
 
 ---
 
-## Acknowledgements
+## Source tree
 
-- **Nuked OPM** by Nuke.YKT — the YM2151/YM2164 emulation core, based on die analysis by gtr3qq (siliconpr0n.org). Licensed LGPL-2.1.
-- **nuked-opp-xcent** by Knives On Strings — the OPP attack-rate skip mechanism for YM2164 AR=18–30 plateau modelling. Licensed LGPL-2.1.
-- **picoX21H** — parallel hardware DX21 project whose voice-program architecture informed the applyPatch-at-program-change design.
+```
+src/
+├── kernel.{h,cpp}             Bare-metal CKernel (multi-core launch, panic, core dispatch)
+├── main.cpp                   C-style main() entry point
+├── microdx21.{h,cpp}          CMicroDX21 — MIDI, presets, audio, SysEx
+├── circle_stdlib_vk.h         StdlibApp base class (tty, log, file system, network)
+├── common.h                   maplong/mapfloat/constrain helpers
+│
+├── audio/                     Audio backends (PWM, I2S, USB gadget)
+│   ├── microdx21_pwm.{h,cpp}
+│   ├── microdx21_i2s.{h,cpp}
+│   ├── microdx21_usb.{h,cpp}
+│   ├── microdx21_multicore.{h,cpp}     Core-1 audio producer, lockfree ringbuffer
+│   └── opmemuadapter.h        DX21_Patch ↔ COPMEmu parameter adapter (for `Render()` to read live synth state)
+│
+├── midi/                      MIDI device drivers
+│   ├── microdx21_mididevice.{h,cpp}
+│   ├── microdx21_usbmididevice.{h,cpp}
+│   ├── microdx21_serialmididevice.{h,cpp}  # DIN-MIDI on UART GPIO
+│   └── microdx21_pckeyboard.{h,cpp}        # PC keyboard (debug only)
+│
+├── display/                   128x32 OLED + KY-040 UI
+│   ├── display_dx21.{h,cpp}   CDX21Display: 5 DX21 modes rendered to 128x32 OLED
+│   ├── dx21_input.{h,cpp}     CDX21Input: KY-040 → mode/param/compare state machine
+│   └── displayconfig.h        DisplayConfig struct (pins, bus, controller)
+│
+├── opm/                       The synth engine itself
+│   ├── opm.c                  Nuked OPM (cycle-accurate YM2151/YM2164 emulation)
+│   ├── opm.h
+│   ├── opmemu.{h,cpp}         DX21 voice management, MIDI handling, effects
+│   ├── patches.h              128 DX21 factory voices
+│   ├── memory/                RAM voices, performance memories, JSON+SysEx persistence
+│   │   ├── dx21_memory.{h,cpp}
+│   ├── io/                    Pluggable filesystem layer
+│   │   ├── ifilesystem.h
+│   │   ├── std_filesystem.h
+│   │   └── fatfs_filesystem.h
+│   ├── dx21_ui_strings.h      ROM-V1.5-extracted UI strings (EDIT/FUNCTION/TAPE/MIDI)
+│   └── dx21_ui_7seg.h         8x16 7-segment font (digits, letters, symbols)
+│
+├── system/                    Boot configuration
+│   ├── config.{h,cpp}
+│   └── utility.h
+│
+├── util/ringbuffer.h          Lock-free SPSC ringbuffer
+│
+├── opm/firmware/
+│   └── dx21_rom_v1_5.asm      Reverse-engineered ROM V1.5 (M6803 asm) — reference only
+│
+├── Synth_OPM.mk               Audio-engine-specific CFLAGS (-mcpu=cortex-a53, NEON, …)
+├── display.mk                 Include path for circle/addon/display
+├── sensor.mk                  Include path for circle/addon/sensor (CKY040)
+├── Rules.mk                   Circle-stdlib LIBS+INCLUDES (re-includes Config.mk)
+└── Makefile                   OBJS, CFLAGS_FOR_TARGET forwarding, opm.c special rule
+
+config/
+├── config.txt                 Pi boot config (kernel=…, arm_64bit=1, gpu_mem=16, …)
+├── cmdline.txt                Kernel command line (usbspeed=full)
+└── microdx21.ini              microDX21 application config (parsed by CConfig)
+```
+
+---
+
+## Architecture decisions
+
+### Audio thread safety
+- No `new`/`delete` after `Initialize()`. No `std::vector` resize, no `std::string` mutation in the audio callback (`processBlock()`).
+- `m_audioPaused` atomic gates DMA output during heavy operations (preset load, SysEx bulk import).
+- MIDI queue is SPSC lock-free; SysEx is queued and processed on Core 3 / deferred thread.
+
+### Display thread safety
+- `CDX21Display::Render()` is single-threaded — only called from Core 2 in multi-core builds, only from Core 0 in single-core. Cached state (`m_bDirty`) avoids re-rendering the framebuffer.
+- The `CKY040` event handler runs in GPIO-IRQ context but only mutates atomic-sized `int` parameters via `Set*()` methods; the actual `Render()` happens on Core 2.
+- The display is purely text-based with no widget tree, style cache, or layout engine. `CDX21Display` is 543 lines, has zero heap allocation, and the entire framebuffer update is a 30 Hz `Clear() + 4 lines of text + 1 7-seg number + Show()` — total < 200 µs on a Pi 3. The 128×32 OLED's 1 KB framebuffer maps 1:1 to the original DX21's 2×16 character LCD.
+
+### Strings from the ROM
+The original DX21 firmware (`src/opm/firmware/dx21_rom_v1_5.asm`, 14 600 lines of M6803 assembler) was reversed to extract the LCD strings. The 6 modes (`PLAY/EDIT/PERFORMANCE/FUNCTION/MEMORY/COMPARE`) and their per-mode handlers are documented in `rtn_85`, `rtn_184` in that file. We deliberately *re-implement* the dispatch logic in `CDX21Input::ApplyEvent()` rather than emulate the M6803 — the goal is "looks and feels like a DX21", not 100% ROM-cycle equivalence.
+
+---
+
+## MIDI implementation notes
+
+- **Channel filter** — `CMicroDX21::ShouldAcceptChannel()` filters channel-voice messages (notes, CC, PC, pitch bend) by the configured `MIDIChannel`. SysEx and system real-time (clock, start/stop/continue) always pass.
+- **SysEx** is queued in a 2-slot buffer (up to 64 KB each) and processed in `ProcessDeferredSysEx()`. Real-time parameter change and bulk dump both supported.
+- **Soft-thru** is unfiltered (forwards everything received on USB-MIDI to USB-MIDI out, useful for DAW setups).
+- **Program Change** loads a patch into voice A; PC is not delayed.
+- **Channel pressure / Poly aftertouch** are received but currently ignored (DX21 has no aftertouch).
+
+---
+
+## VCED → YM2151 register mapping
+
+DX21 parameters don't map 1:1. Key conversions:
+
+| DX21 | YM2151 | Notes |
+|---|---|---|
+| DET (0–6 = −3…+3) | DT1 | `{7,6,5,0,1,2,3}[det]` (negative half goes to DT1=5–7) |
+| CRS (0–63) | MUL (0–15) | 4-step for MUL=0, 3-step for MUL=1–15, then flat at 15 |
+| OUT (0–99) | TL | `tl = (99 - out) * 127 / 99` |
+| D1L (0–15) | D1L | `15 - d1l` (DX21 inverts direction) |
+| LS (0–99) | TL offset | per-note, scaled by `(note - 60)` |
+| KVS (0–7) | TL offset | per-note velocity attenuation |
+| ALG (0–7) | CON | direct |
+| LFO SPEED (0–255) | `chip->lfo_freq` (via `OPM_SetLFOFrequency` 4-bit scaled) | 8-bit value mapped to 4-bit chip range |
+| LFO WAVE | `chip->lfo_wave` | tri / saw up / square / s&h |
+| AMD/PMD (0–127) | `chip->amd/pmd` | direct 7-bit |
+| PMS/AMS (0–7 / 0–3) | `OPM_Channel*` PMS/AMS | 3-bit / 2-bit |
+| LFO_SYNC | `OPM_KeyOn` re-trigger | key-on-time-reset LFO phase |
+
+KC note-code mapping: only 12 of 16 nibble values are chromatic. C sits at the top of each chip octave (nibble 14), so the boundary is computed as `chip_oct = (midi - 1) / 12 - 1` and `chip_note = (midi - 1) % 12` → MIDI 60 = C4 → KC 0x3E (oct 3, nibble 14).
 
 ---
 
 ## License
 
-The DX21 emulator code (`opmemu.cpp`, `opmemu.h`, `patches.h`, `memory/`, `io/`, `standalone.cpp`) is released under the **MIT License**.
+- **microDX21 code** (`opmemu.cpp`, `patches.h`, `memory/`, `io/`, `display/`, `dx21_ui_*.h`, `kernel.cpp`, `audio/`, `midi/`, `system/`, `util/`) is released under the **MIT License**.
+- **Nuked OPM** (`src/opm/opm.c`, `src/opm/opm.h`) by Nuke.YKT, **LGPL-2.1-or-later**.
+- **nuked-opp-xcent** attack-rate-skip integration, **LGPL-2.1-or-later**.
 
-The Nuked OPM core (`opm.c`, `opm.h`) is licensed under the **GNU LGPL-2.1-or-later**. Any binary that links against it must comply with the LGPL relink right — either link dynamically, or provide object files for relinking.
+LGPL compliance: when distributing binaries, either link Nuked OPM dynamically or provide object files for the relink right.
 
-The nuked-opp-xcent code is licensed under the **GNU LGPL-2.1-or-later**.
+---
+
+## Acknowledgements
+
+- **Nuke.YKT** for the Nuked OPM/OPP core, die analysis by gtr3qq (siliconpr0n.org).
+- **Knives On Strings** for the OPP AR-skip patch.
+- **Circle** (by R. Stange) and the **circle-stdlib** project.
+- **MiniDexed** and **picoX21H** for inspiration on DX21 emulation architecture and bare-metal FM synth deployment.
+
+---
+
+## Roadmap
+
+- [x] Nuked OPM-based FM core
+- [x] 128 factory patches
+- [x] 32 RAM voice slots
+- [x] DX21 SysEx (parameter change + bulk dump)
+- [x] Play modes (Single/Dual/Split)
+- [x] 32 performance memories (JSON)
+- [x] Multi-core deployment (Pi 3/4/5)
+- [x] New minimal UI (128×32 SSD1305/SH1106 + KY-040)
+- [ ] **Plug in the synth engine to the UI** — `CDX21Display::Render()` currently shows placeholder values; the next step is reading real parameter values from `COPMEmuAdapter` and rendering them per mode.
+- [ ] **Power on splash** — show `*  YAMAHA DX21  *` for 2 s at boot.
+- [ ] **Boot logo** — pre-render a static splash and `SwapFrameBuffers` before handing off to `Run()`.
+- [ ] **Tape save/load UI** — the strings are extracted; we need the corresponding button sequence to trigger them.
+- [ ] **Audio over USB Gadget** (Pi 3 only, requires DWC2) — already in code, untested.
+- [ ] **Panic / safe shutdown** — `Off()` the display and drain the audio buffer in `PanicHandler()`.
+
