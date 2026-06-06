@@ -1,10 +1,10 @@
 //
-// velvet_serialmididevice.cpp
+// microdx21_serialmididevice.cpp
 //
 
-#include "velvet_serialmididevice.h"
+#include "microdx21_serialmididevice.h"
 #include "config.h"
-#include "velvetkeys.h"
+#include "microdx21.h"
 #include <circle/logger.h>
 #include <cstring>
 
@@ -12,10 +12,10 @@ LOGMODULE("uartmidi");
 
 #define UART_DEVICE 0   // Circle UART0 = GPIO14/15
 
-CVelvetSerialMIDIDevice::CVelvetSerialMIDIDevice(CVelvetKeys* pSynth,
+CMicroDX21SerialMIDIDevice::CMicroDX21SerialMIDIDevice(CMicroDX21* pSynth,
                                                  CInterruptSystem* pInterrupt,
                                                  CConfig* pConfig)
-: CVelvetMIDIDevice(pSynth, pConfig)
+: CMicroDX21MIDIDevice(pSynth, pConfig)
 , m_pConfig(pConfig)
 , m_serial(pInterrupt, TRUE, UART_DEVICE)
 , m_txIn(0)
@@ -29,11 +29,11 @@ CVelvetSerialMIDIDevice::CVelvetSerialMIDIDevice(CVelvetKeys* pSynth,
 {
 }
 
-CVelvetSerialMIDIDevice::~CVelvetSerialMIDIDevice()
+CMicroDX21SerialMIDIDevice::~CMicroDX21SerialMIDIDevice()
 {
 }
 
-bool CVelvetSerialMIDIDevice::Initialize()
+bool CMicroDX21SerialMIDIDevice::Initialize()
 {
     bool ok = m_serial.Initialize(m_pConfig->GetMIDIBaudRate());
     if (!ok)
@@ -60,7 +60,7 @@ bool CVelvetSerialMIDIDevice::Initialize()
 // because CSerialDevice::Write() takes a flat buffer.  If the ring
 // is wrapped, we'll catch the second half on the next Process().
 // ──────────────────────────────────────────────────────────────
-void CVelvetSerialMIDIDevice::DrainTx()
+void CMicroDX21SerialMIDIDevice::DrainTx()
 {
     unsigned in, out;
 
@@ -85,7 +85,7 @@ void CVelvetSerialMIDIDevice::DrainTx()
     m_txSpinLock.Release();
 }
 
-void CVelvetSerialMIDIDevice::Process()
+void CMicroDX21SerialMIDIDevice::Process()
 {
     DrainTx();
 
@@ -122,7 +122,7 @@ static void FlashLed(u64& offTime, bool& active, unsigned durationUs)
 // once.  A 64 KiB ring covers any plausible SysEx response burst
 // (GET_PRESET_INDEX = ~4.8 KiB), so overflow indicates a real
 // downstream stall (e.g. UART cable disconnected).
-void CVelvetSerialMIDIDevice::Send(const u8* msg, size_t len, unsigned cable)
+void CMicroDX21SerialMIDIDevice::Send(const u8* msg, size_t len, unsigned cable)
 {
     if (!msg || len == 0)
         return;
@@ -149,7 +149,7 @@ void CVelvetSerialMIDIDevice::Send(const u8* msg, size_t len, unsigned cable)
         LOGWARN("UART TX ring full, dropped bytes (UART/Pico stalled?)");
 }
 
-void CVelvetSerialMIDIDevice::HandleIncomingByte(u8 byte)
+void CMicroDX21SerialMIDIDevice::HandleIncomingByte(u8 byte)
 {
     // ───────────────────────────────────────────────
     // System Real-Time messages (0xF8–0xFF except SysEx)

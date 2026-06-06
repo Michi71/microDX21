@@ -1,4 +1,4 @@
-#include "velvetkeys_i2s.h"
+#include "microdx21_i2s.h"
 #include <circle/actled.h>
 #include <circle/timer.h>
 #include <circle/synchronize.h>
@@ -6,12 +6,12 @@
 
 LOGMODULE("i2s");
 
-CVelvetKeysI2S::CVelvetKeysI2S(CConfig*          pConfig,
+CMicroDX21I2S::CMicroDX21I2S(CConfig*          pConfig,
                                CInterruptSystem* pInterrupt,
                                CGPIOManager*     pGPIOManager,
                                CI2CMaster*       pI2CMaster,
                                FATFS*            pFileSystem)
-: CVelvetKeys(pConfig,
+: CMicroDX21(pConfig,
               pInterrupt,
               pGPIOManager,
               pI2CMaster,
@@ -28,10 +28,10 @@ CVelvetKeysI2S::CVelvetKeysI2S(CConfig*          pConfig,
 {
 }
 
-bool CVelvetKeysI2S::Initialize()
+bool CMicroDX21I2S::Initialize()
 {
     // 1. Presets + MIDI devices FIRST (SD card I/O, no DMA conflict)
-    if (!CVelvetKeys::Initialize())
+    if (!CMicroDX21::Initialize())
         return false;
 
     // 2. Then start I2S + DMA (audio output)
@@ -68,17 +68,17 @@ bool CVelvetKeysI2S::Initialize()
     return true;
 }
 
-bool CVelvetKeysI2S::Start()
+bool CMicroDX21I2S::Start()
 {
     return CI2SSoundBaseDevice::Start();
 }
 
-bool CVelvetKeysI2S::IsActive() const
+bool CMicroDX21I2S::IsActive() const
 {
     return CI2SSoundBaseDevice::IsActive();
 }
 
-unsigned CVelvetKeysI2S::GetChunk(u32* pBuffer, unsigned nChunkSize)
+unsigned CMicroDX21I2S::GetChunk(u32* pBuffer, unsigned nChunkSize)
 {
     if (!pBuffer)
         return 0;

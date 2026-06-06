@@ -1,5 +1,5 @@
 //
-// velvet_mididevice.h
+// microdx21_mididevice.h
 //
 
 #ifndef _VELVET_MIDIDEVICE_H
@@ -10,9 +10,9 @@
 
 class CConfig;
 class CUserInterface;
-class CVelvetKeys;
+class CMicroDX21;
 
-class CVelvetMIDIDevice
+class CMicroDX21MIDIDevice
 {
 public:
     enum TChannel
@@ -37,9 +37,9 @@ public:
     };
 
 public:
-    CVelvetMIDIDevice(CVelvetKeys* pSynth,
+    CMicroDX21MIDIDevice(CMicroDX21* pSynth,
                       CConfig*     pConfig);
-    virtual ~CVelvetMIDIDevice();
+    virtual ~CMicroDX21MIDIDevice();
 
     void SetDeviceName(const std::string& name);
     const std::string& GetDeviceName() const;
@@ -63,7 +63,7 @@ protected:
     std::string m_deviceName;    
 
 private:
-    CVelvetKeys*    m_pSynth;
+    CMicroDX21*    m_pSynth;
     CConfig*        m_pConfig;
 
     u8              m_channel;      // device-level channel filter

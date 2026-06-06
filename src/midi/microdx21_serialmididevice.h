@@ -1,11 +1,11 @@
 //
-// velvet_serialmididevice.h
+// microdx21_serialmididevice.h
 //
 
 #ifndef _VELVET_SERIALMIDIDEVICE_H
 #define _VELVET_SERIALMIDIDEVICE_H
 
-#include "velvet_mididevice.h"
+#include "microdx21_mididevice.h"
 #include <circle/actled.h>
 #include <circle/interrupt.h>
 #include <circle/serial.h>
@@ -14,16 +14,16 @@
 
 class CConfig;
 class CUserInterface;
-class CVelvetKeys;
+class CMicroDX21;
 
-class CVelvetSerialMIDIDevice : public CVelvetMIDIDevice
+class CMicroDX21SerialMIDIDevice : public CMicroDX21MIDIDevice
 {
 public:
-    CVelvetSerialMIDIDevice(CVelvetKeys* pSynth,
+    CMicroDX21SerialMIDIDevice(CMicroDX21* pSynth,
                             CInterruptSystem* pInterrupt,
                             CConfig* pConfig);
 
-    ~CVelvetSerialMIDIDevice();
+    ~CMicroDX21SerialMIDIDevice();
 
     bool Initialize();
     void Process();

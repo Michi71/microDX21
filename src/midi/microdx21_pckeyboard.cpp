@@ -1,9 +1,9 @@
 //
-// velvet_pckeyboard.cpp
+// microdx21_pckeyboard.cpp
 //
 
-#include "velvet_pckeyboard.h"
-#include "velvetkeys.h"
+#include "microdx21_pckeyboard.h"
+#include "microdx21.h"
 #include "config.h"
 #include <circle/devicenameservice.h>
 #include <circle/logger.h>
@@ -12,23 +12,23 @@
 
 LOGMODULE("pckbd");
 
-CVelvetPCKeyboard* CVelvetPCKeyboard::s_pThis = nullptr;
+CMicroDX21PCKeyboard* CMicroDX21PCKeyboard::s_pThis = nullptr;
 
-CVelvetPCKeyboard::CVelvetPCKeyboard(CVelvetKeys* pSynth,
+CMicroDX21PCKeyboard::CMicroDX21PCKeyboard(CMicroDX21* pSynth,
                                      CConfig* pConfig)
-: CVelvetMIDIDevice(pSynth, pConfig)
+: CMicroDX21MIDIDevice(pSynth, pConfig)
 , m_pKeyboard(nullptr)
 {
     memset(m_lastKeys, 0, sizeof(m_lastKeys));
     s_pThis = this;
 }
 
-CVelvetPCKeyboard::~CVelvetPCKeyboard()
+CMicroDX21PCKeyboard::~CMicroDX21PCKeyboard()
 {
     s_pThis = nullptr;
 }
 
-void CVelvetPCKeyboard::Process(bool plugAndPlayUpdated)
+void CMicroDX21PCKeyboard::Process(bool plugAndPlayUpdated)
 {
     if (!plugAndPlayUpdated)
         return;
@@ -46,7 +46,7 @@ void CVelvetPCKeyboard::Process(bool plugAndPlayUpdated)
     }
 }
 
-void CVelvetPCKeyboard::KeyStatusHandlerRaw(unsigned char modifiers,
+void CMicroDX21PCKeyboard::KeyStatusHandlerRaw(unsigned char modifiers,
                                             const unsigned char rawKeys[6])
 {
     assert(s_pThis);
@@ -84,7 +84,7 @@ void CVelvetPCKeyboard::KeyStatusHandlerRaw(unsigned char modifiers,
     memcpy(s_pThis->m_lastKeys, rawKeys, sizeof(s_pThis->m_lastKeys));
 }
 
-bool CVelvetPCKeyboard::Contains(const u8* arr, u8 val, unsigned len)
+bool CMicroDX21PCKeyboard::Contains(const u8* arr, u8 val, unsigned len)
 {
     for (unsigned i = 0; i < len; i++)
         if (arr[i] == val)
@@ -93,7 +93,7 @@ bool CVelvetPCKeyboard::Contains(const u8* arr, u8 val, unsigned len)
 }
 
 // Mapping USB keycodes → MIDI notes
-u8 CVelvetPCKeyboard::TranslateKeyToMIDINote(u8 keycode)
+u8 CMicroDX21PCKeyboard::TranslateKeyToMIDINote(u8 keycode)
 {
     // USB HID → ASCII mapping
     char ch;
@@ -124,8 +124,8 @@ u8 CVelvetPCKeyboard::TranslateKeyToMIDINote(u8 keycode)
     return 0;
 }
 
-void CVelvetPCKeyboard::DeviceRemoved(CDevice* dev, void* ctx)
+void CMicroDX21PCKeyboard::DeviceRemoved(CDevice* dev, void* ctx)
 {
-    auto* self = static_cast<CVelvetPCKeyboard*>(ctx);
+    auto* self = static_cast<CMicroDX21PCKeyboard*>(ctx);
     self->m_pKeyboard = nullptr;
 }

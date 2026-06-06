@@ -1,12 +1,12 @@
-#include "velvet_usbmididevice.h"
+#include "microdx21_usbmididevice.h"
 #include <circle/devicenameservice.h>
 #include <cstring>
 #include <assert.h>
 
-CVelvetUSBMIDIDevice::CVelvetUSBMIDIDevice(CVelvetKeys* pSynth,
+CMicroDX21USBMIDIDevice::CMicroDX21USBMIDIDevice(CMicroDX21* pSynth,
                                            CConfig* pConfig,
                                            unsigned instance)
-: CVelvetMIDIDevice(pSynth, pConfig)
+: CMicroDX21MIDIDevice(pSynth, pConfig)
 , m_instance(instance)
 , m_pUSBDevice(nullptr)
 , m_sysexIndex(0)
@@ -14,7 +14,7 @@ CVelvetUSBMIDIDevice::CVelvetUSBMIDIDevice(CVelvetKeys* pSynth,
     m_deviceName = "umidi" + std::to_string(instance + 1);
 }
 
-void CVelvetUSBMIDIDevice::Process(bool plugAndPlayUpdated)
+void CMicroDX21USBMIDIDevice::Process(bool plugAndPlayUpdated)
 {
     // Flush outgoing queue (allocation-free) — muss immer laufen,
     // auch ohne PlugAndPlay-Update (Gadget-Mode feuert nie PnP).
@@ -43,7 +43,7 @@ void CVelvetUSBMIDIDevice::Process(bool plugAndPlayUpdated)
     }
 }
 
-void CVelvetUSBMIDIDevice::Send(const u8* msg, size_t len, unsigned cable)
+void CMicroDX21USBMIDIDevice::Send(const u8* msg, size_t len, unsigned cable)
 {
     if (len > sizeof(SendQueueEntry::data))
         return; // Message too large for queue slot
@@ -59,21 +59,21 @@ void CVelvetUSBMIDIDevice::Send(const u8* msg, size_t len, unsigned cable)
     m_sendHead = nextHead;
 }
 
-void CVelvetUSBMIDIDevice::PacketHandler(unsigned cable, u8* packet,
+void CMicroDX21USBMIDIDevice::PacketHandler(unsigned cable, u8* packet,
                                          unsigned length, unsigned device,
                                          void* param)
 {
-    auto* self = static_cast<CVelvetUSBMIDIDevice*>(param);
+    auto* self = static_cast<CMicroDX21USBMIDIDevice*>(param);
     self->HandleUSBPacket(packet, length, cable, device);
 }
 
-void CVelvetUSBMIDIDevice::DeviceRemoved(CDevice*, void* ctx)
+void CMicroDX21USBMIDIDevice::DeviceRemoved(CDevice*, void* ctx)
 {
-    auto* self = static_cast<CVelvetUSBMIDIDevice*>(ctx);
+    auto* self = static_cast<CMicroDX21USBMIDIDevice*>(ctx);
     self->m_pUSBDevice = nullptr;
 }
 
-void CVelvetUSBMIDIDevice::HandleUSBPacket(u8* packet, unsigned length,
+void CMicroDX21USBMIDIDevice::HandleUSBPacket(u8* packet, unsigned length,
                                            unsigned cable, unsigned device)
 {
     if (length == 0 || !packet)

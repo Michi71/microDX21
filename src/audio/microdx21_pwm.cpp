@@ -1,29 +1,28 @@
-#include "velvetkeys_usb.h"
-#include <circle/sound/usbsoundbasedevice.h>
+#include "microdx21_pwm.h"
 #include <circle/synchronize.h>
 
-#if RASPPI >= 4
-
-CVelvetKeysUSB::CVelvetKeysUSB(CConfig*          pConfig,
+CMicroDX21PWM::CMicroDX21PWM(CConfig*          pConfig,
                                CInterruptSystem* pInterrupt,
                                CGPIOManager*     pGPIOManager,
                                CI2CMaster*       pI2CMaster,
                                FATFS*            pFileSystem)
-: CVelvetKeys(pConfig,
+: CMicroDX21(pConfig,
               pInterrupt,
               pGPIOManager,
               pI2CMaster,
               nullptr,
               pFileSystem)
-, CUSBSoundBaseDevice(
-        pConfig->GetSampleRate()
-      )
+, CPWMSoundBaseDevice(
+        pInterrupt,
+        pConfig->GetSampleRate(),
+        pConfig->GetChunkSize()
+     )
 {
 }
 
-bool CVelvetKeysUSB::Initialize()
+bool CMicroDX21PWM::Initialize()
 {
-    if (!CVelvetKeys::Initialize())
+    if (!CMicroDX21::Initialize())
         return false;
 
     if (!Start())
@@ -32,27 +31,22 @@ bool CVelvetKeysUSB::Initialize()
     return true;
 }
 
-bool CVelvetKeysUSB::Start()
+bool CMicroDX21PWM::Start()
 {
-    return CUSBSoundBaseDevice::Start();
+    return CPWMSoundBaseDevice::Start();
 }
 
-bool CVelvetKeysUSB::IsActive() const
+bool CMicroDX21PWM::IsActive() const
 {
-    return CUSBSoundBaseDevice::IsActive();
+    return CPWMSoundBaseDevice::IsActive();
 }
 
-unsigned CVelvetKeysUSB::GetChunk(u32* pBuffer, unsigned nChunkSize)
+unsigned CMicroDX21PWM::GetChunk(u32* pBuffer, unsigned nChunkSize)
 {
     if (!pBuffer)
         return 0;
 
-    unsigned nChannels = GetHWTXChannels();
-    if (nChannels == 0)
-        return 0;
-
-    unsigned nFrames   = nChunkSize / nChannels;
-
+    unsigned nFrames = nChunkSize / 2;
     if (nFrames > 4096)
         nFrames = 4096;
 
@@ -70,25 +64,29 @@ unsigned CVelvetKeysUSB::GetChunk(u32* pBuffer, unsigned nChunkSize)
     nFrames = GenerateAudio(m_outL, m_outR, nFrames);
 #endif
 
-    float scale = 8388607.0f; // 24-bit max
+    float max = (float)GetRangeMax();
+    float min = (float)GetRangeMin();
+    float nullLevel = (GetRangeMin() + GetRangeMax()) * 0.5f;
 
-    for (unsigned f = 0; f < nFrames; ++f)
-    {
-        int32_t li = (int32_t)(m_outL[f] * scale);
-        int32_t ri = (int32_t)(m_outR[f] * scale);
+    float scale = (max - min) / 2.0f;
+
+    for (unsigned i = 0; i < nFrames; ++i)
+       {
+        float l = m_outL[i] * scale + nullLevel;
+        float r = m_outR[i] * scale + nullLevel;
+
+        int32_t li = (int32_t)l;
+        int32_t ri = (int32_t)r;
 
         if (m_bChannelsSwapped)
             std::swap(li, ri);
 
-        // 24-bit in 32-bit container (right-justified, standard USB Audio)
-        *pBuffer++ = (u32)li;
-        *pBuffer++ = (u32)ri;
-    }
+          *pBuffer++ = (u32)li;
+          *pBuffer++ = (u32)ri;
+       }
 
     LeaveCritical();
 
-    return nFrames * nChannels;
+    return nFrames * 2;
 }
 
-
-#endif

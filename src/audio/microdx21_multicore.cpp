@@ -1,20 +1,20 @@
 //
-// velvetkeys_multicore.cpp
+// microdx21_multicore.cpp
 //
 #ifdef ARM_ALLOW_MULTI_CORE
 
-#include "velvetkeys_multicore.h"
+#include "microdx21_multicore.h"
 #include "kernel.h"
 #include <circle/logger.h>
 #include <circle/memory.h>
 
-CVelvetKeysMultiCore::CVelvetKeysMultiCore(CKernel *pKernel)
+CMicroDX21MultiCore::CMicroDX21MultiCore(CKernel *pKernel)
 : CMultiCoreSupport(CMemorySystem::Get())
 , m_pKernel(pKernel)
 {
 }
 
-void CVelvetKeysMultiCore::Run(unsigned nCore)
+void CMicroDX21MultiCore::Run(unsigned nCore)
 {
     switch (nCore)
     {

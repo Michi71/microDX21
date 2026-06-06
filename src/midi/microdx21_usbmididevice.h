@@ -1,14 +1,14 @@
 #ifndef _VELVET_USBMIDIDEVICE_H
 #define _VELVET_USBMIDIDEVICE_H
 
-#include "velvet_mididevice.h"
+#include "microdx21_mididevice.h"
 #include <circle/usb/usbmidi.h>
 #include <circle/device.h>
 
-class CVelvetUSBMIDIDevice : public CVelvetMIDIDevice
+class CMicroDX21USBMIDIDevice : public CMicroDX21MIDIDevice
 {
 public:
-    CVelvetUSBMIDIDevice(CVelvetKeys* pSynth,
+    CMicroDX21USBMIDIDevice(CMicroDX21* pSynth,
                          CConfig* pConfig,
                          unsigned instance = 0);
 

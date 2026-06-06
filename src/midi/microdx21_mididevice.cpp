@@ -1,16 +1,16 @@
 //
-// velvet_mididevice.cpp
+// microdx21_mididevice.cpp
 //
 
-#include "velvet_mididevice.h"
-#include "velvetkeys.h"
+#include "microdx21_mididevice.h"
+#include "microdx21.h"
 #include "config.h"
 #include "opmemuadapter.h"
 #include <circle/logger.h>
 
 LOGMODULE("midi");
 
-CVelvetMIDIDevice::CVelvetMIDIDevice(CVelvetKeys*   pSynth,
+CMicroDX21MIDIDevice::CMicroDX21MIDIDevice(CMicroDX21*   pSynth,
                                      CConfig*       pConfig)
 : m_pSynth(pSynth)
 , m_pConfig(pConfig)
@@ -18,21 +18,21 @@ CVelvetMIDIDevice::CVelvetMIDIDevice(CVelvetKeys*   pSynth,
 {
 }
 
-CVelvetMIDIDevice::~CVelvetMIDIDevice()
+CMicroDX21MIDIDevice::~CMicroDX21MIDIDevice()
 {
 }
 
-void CVelvetMIDIDevice::SetDeviceName(const std::string& name)
+void CMicroDX21MIDIDevice::SetDeviceName(const std::string& name)
 {
     m_deviceName = name;
 }
 
-const std::string& CVelvetMIDIDevice::GetDeviceName() const
+const std::string& CMicroDX21MIDIDevice::GetDeviceName() const
 {
     return m_deviceName;
 }
 
-void CVelvetMIDIDevice::SetChannel(u8 channel)
+void CMicroDX21MIDIDevice::SetChannel(u8 channel)
 {
     if (channel <= Channels)
         m_channel = channel;
@@ -40,12 +40,12 @@ void CVelvetMIDIDevice::SetChannel(u8 channel)
         m_channel = Disabled;
 }
 
-u8 CVelvetMIDIDevice::GetChannel() const
+u8 CMicroDX21MIDIDevice::GetChannel() const
 {
     return m_channel;
 }
 
-void CVelvetMIDIDevice::HandleMIDI(const u8* msg, size_t len, unsigned cable)
+void CMicroDX21MIDIDevice::HandleMIDI(const u8* msg, size_t len, unsigned cable)
 {
     if (!msg || len == 0 || !m_pSynth)
         return;
@@ -71,7 +71,7 @@ void CVelvetMIDIDevice::HandleMIDI(const u8* msg, size_t len, unsigned cable)
         return;
 
     // ───────────────────────────────────────────────
-    // GLOBAL CHANNEL FILTER (from velvetkeys.ini "MidiChannel")
+    // GLOBAL CHANNEL FILTER (from microdx21.ini "MidiChannel")
     //
     // Only channel-voice messages (status 0x80-0xEF, type 0x8-0xE) are
     // gated.  SysEx (0xF0), System Common (0xF1-0xF7) and Realtime
@@ -160,7 +160,7 @@ void CVelvetMIDIDevice::HandleMIDI(const u8* msg, size_t len, unsigned cable)
 // MESSAGE HANDLERS
 // ───────────────────────────────────────────────
 
-void CVelvetMIDIDevice::HandleNoteOn(u8 ch, u8 note, u8 vel)
+void CMicroDX21MIDIDevice::HandleNoteOn(u8 ch, u8 note, u8 vel)
 {
     if (vel == 0)
         m_pSynth->NoteOff(note);
@@ -168,12 +168,12 @@ void CVelvetMIDIDevice::HandleNoteOn(u8 ch, u8 note, u8 vel)
         m_pSynth->NoteOn(note, vel);
 }
 
-void CVelvetMIDIDevice::HandleNoteOff(u8 ch, u8 note, u8 vel)
+void CMicroDX21MIDIDevice::HandleNoteOff(u8 ch, u8 note, u8 vel)
 {
     m_pSynth->NoteOff(note);
 }
 
-void CVelvetMIDIDevice::HandleControlChange(u8 ch, u8 cc, u8 val)
+void CMicroDX21MIDIDevice::HandleControlChange(u8 ch, u8 cc, u8 val)
 {
     switch (cc)
     {
@@ -205,7 +205,7 @@ void CVelvetMIDIDevice::HandleControlChange(u8 ch, u8 cc, u8 val)
     }
 }
 
-void CVelvetMIDIDevice::HandleSysEx(const u8* msg, size_t len)
+void CMicroDX21MIDIDevice::HandleSysEx(const u8* msg, size_t len)
 {
     // Master Volume SysEx
     if (len == 8 &&

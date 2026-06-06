@@ -1,8 +1,8 @@
 //
-// velvetkeys_multicore.h
+// microdx21_multicore.h
 //
-#ifndef _velvetkeys_multicore_h
-#define _velvetkeys_multicore_h
+#ifndef _MICRODX21_MULTICORE_H
+#define _MICRODX21_MULTICORE_H
 
 #ifdef ARM_ALLOW_MULTI_CORE
 
@@ -11,10 +11,10 @@
 
 class CKernel;
 
-class CVelvetKeysMultiCore : public CMultiCoreSupport
+class CMicroDX21MultiCore : public CMultiCoreSupport
 {
 public:
-    CVelvetKeysMultiCore(CKernel *pKernel);
+    CMicroDX21MultiCore(CKernel *pKernel);
     
     void Run(unsigned nCore) override;
 

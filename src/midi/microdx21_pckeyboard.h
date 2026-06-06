@@ -1,26 +1,26 @@
 //
-// velvet_pckeyboard.h
+// microdx21_pckeyboard.h
 //
 
 #ifndef _VELVET_PCKEYBOARD_H
 #define _VELVET_PCKEYBOARD_H
 
-#include "velvet_mididevice.h"
+#include "microdx21_mididevice.h"
 #include <circle/usb/usbkeyboard.h>
 #include <circle/device.h>
 #include <circle/types.h>
 
 class CConfig;
 class CUserInterface;
-class CVelvetKeys;
+class CMicroDX21;
 
-class CVelvetPCKeyboard : public CVelvetMIDIDevice
+class CMicroDX21PCKeyboard : public CMicroDX21MIDIDevice
 {
 public:
-    CVelvetPCKeyboard(CVelvetKeys* pSynth,
+    CMicroDX21PCKeyboard(CMicroDX21* pSynth,
                       CConfig* pConfig);
 
-    ~CVelvetPCKeyboard();
+    ~CMicroDX21PCKeyboard();
 
     void Process(bool plugAndPlayUpdated);
 
@@ -38,7 +38,7 @@ private:
 
     u8 m_lastKeys[6];
 
-    static CVelvetPCKeyboard* s_pThis;
+    static CMicroDX21PCKeyboard* s_pThis;
 };
 
 #endif
