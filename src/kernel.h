@@ -1,14 +1,14 @@
 //
 // kernel.h
 //
-// VelvetKeys - A bare metal synthesizer for Raspberry Pi
-// Based on COPMEmu FM synthesizer engine (DX21)
-
+// microDX21 - a Yamaha DX21 emulator for Raspberry Pi (bare-metal Circle).
+// Single-encoder + small SSD1305/SPI OLED (128x32) UI. No LVGL.
 //
+
 #ifndef _kernel_h
 #define _kernel_h
 
-#include "circle_stdlib_app.h"
+#include <circle_stdlib_app.h>
 #include <circle/cputhrottle.h>
 #include <circle/gpiomanager.h>
 #include <circle/i2cmaster.h>
@@ -23,48 +23,43 @@
 #include <circle/sched/scheduler.h>
 #include <atomic>
 #include "config.h"
-#include "velvetkeys.h"
-#include "velvetkeys_pwm.h"
-#include "velvetkeys_i2s.h"
-#include "velvetkeys_usb.h"
-#include "displaymanager.h"
+#include "microdx21.h"
+#include "audio/microdx21_pwm.h"
+#include "audio/microdx21_i2s.h"
+#include "audio/microdx21_usb.h"
 #include "circle_stdlib_vk.h"
+#include "display/display_dx21.h"
+#include "display/dx21_input.h"
 
 #ifdef ARM_ALLOW_MULTI_CORE
-#include "velvetkeys_multicore.h"
+#include "audio/microdx21_multicore.h"
 #endif
 
-enum TShutdownMode
-{
+enum TShutdownMode {
     ShutdownNone,
     ShutdownHalt,
     ShutdownReboot
 };
 
-class CKernel : public CStdlibVKStdio
-{
+class CKernel : public CStdlibVKStdio {
 public:
     CKernel();
-     ~CKernel();
+    ~CKernel();
 
     bool Initialize();
     TShutdownMode Run();
 
 #ifdef ARM_ALLOW_MULTI_CORE
-     // WICHTIG: Public machen, damit CVelvetKeysMultiCore darauf zugreifen kann
-    void RunCore1();    // Audio Prebuffer
-    void RunCore2();    // Display
-    void RunCore3();    // Audio Prep (Fallback)
+    void RunCore1();  // Audio generation
+    void RunCore2();  // Display + encoder
+    void RunCore3();  // Deferred work
 #endif
 
 private:
     static void PanicHandler();
-
-     // Helper
     static unsigned GetNumberOfCores();
 
 #ifdef ARM_ALLOW_MULTI_CORE
-     // Multicore entry points
     static void SecondaryCore2Entry();
     static void SecondaryCore3Entry();
 #endif
@@ -75,22 +70,25 @@ private:
     CGPIOManager    m_GPIOManager;
     CI2CMaster      m_I2CMaster;
     CSPIMaster*     m_pSPIMaster;
-    CVelvetKeys*    m_pVelvetKeys;
-    CDisplayManager* m_pDisplayManager;
+    CMicroDX21*     m_pMicroDX21;
     CUSBController* m_pUSB;
 #if RASPPI == 4
-    CUSBHostController* m_pUSBHost;     // xHCI (VL805) für USB-A Ports im Gadget-Mode
+    CUSBHostController* m_pUSBHost;
 #endif
 #if RASPPI < 5
     CUSBMIDIGadget* m_pUSBGadget;
 #endif
     CScheduler      m_Scheduler;
 
+    // Display + input. Set in Initialize(), torn down in destructor.
+    CDX21Display*   m_pDX21Display;
+    CDX21Input*     m_pDX21Input;
+
 #ifdef ARM_ALLOW_MULTI_CORE
-    CVelvetKeysMultiCore* m_pMultiCore;    // NEU
+    CMicroDX21MultiCore* m_pMultiCore;
     volatile bool   m_bCoresReady[4];
 #endif
-    std::atomic<bool> m_bRunning;            // Für Single-Core & Multicore
+    std::atomic<bool> m_bRunning;
 
     static CKernel* s_pThis;
 };
