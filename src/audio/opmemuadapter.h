@@ -385,14 +385,23 @@ public:
         return m_currentProgram;
     }
 
-    void getInstrumentName(char* name)
+    // Copy the current program name into the caller-supplied buffer.
+    // Always NUL-terminates; never writes more than nameSize bytes.
+    // Returns the number of bytes that would have been written if the
+    // buffer were large enough (like snprintf), so the caller can
+    // detect truncation.
+    size_t getInstrumentName(char* name, size_t nameSize)
     {
-        if (!name) return;
-        if (!m_synth) { name[0] = '\0'; return; }
+        if (!name || nameSize == 0) return 0;
+        name[0] = '\0';
+        if (!m_synth) return 0;
         const char* n = m_synth->getCurrentProgramName();
-        if (!n) { name[0] = '\0'; return; }
-        std::strncpy(name, n, 63);
-        name[63] = '\0';
+        if (!n) return 0;
+        const size_t srcLen = std::strlen(n);
+        const size_t copyLen = (srcLen < nameSize - 1) ? srcLen : nameSize - 1;
+        std::memcpy(name, n, copyLen);
+        name[copyLen] = '\0';
+        return srcLen;
     }
 
     int getInstrumentCount()

@@ -145,19 +145,6 @@ static const int kFunctionToAdapter[] = {
 static_assert(sizeof(kFunctionToAdapter)/sizeof(kFunctionToAdapter[0]) == FUNCTION_COUNT,
               "kFunctionToAdapter must match FUNCTION_COUNT");
 
-// ────────────────────────────────────────────────────────────────────
-// Bank labels (4 banks of 16 voices each, 0..15 in each bank)
-// ────────────────────────────────────────────────────────────────────
-static const char* kBankLabel(int voiceNum /* 0-based */) {
-    if (voiceNum < 0) return "A1-A8";
-    int bank = voiceNum / 16;     // 0..7 (we have 128 voices, 8 banks)
-    if (bank < 4) {
-        return (bank & 1) == 0 ? "A1-A8" : "A9-A16";
-    } else {
-        return (bank & 1) == 0 ? "B1-A8" : "B9-B16";
-    }
-}
-
 // ════════════════════════════════════════════════════════════════════
 // Construction / lifecycle
 // ════════════════════════════════════════════════════════════════════
@@ -358,20 +345,6 @@ void CDX21Display::DrawBigString(int x, int y, const char* s) {
 // Synth value helpers
 // ════════════════════════════════════════════════════════════════════
 
-// Read the current voice name and number from the adapter (or fall
-// back to m_VoiceName / m_VoiceNum if no adapter is bound).
-static void ReadVoiceInfo(COPMEmuAdapter* a, char nameOut[17], int& numOut) {
-    if (a) {
-        a->getInstrumentName(nameOut);
-        numOut = a->getInstrument() + 1;  // 1-based
-    } else {
-        if (nameOut && nameOut[0] == '\0') {
-            // not bound - use whatever SetVoiceName was given
-        }
-        numOut = numOut;  // keep m_VoiceNum
-    }
-}
-
 // Read a 0..255 raw value for a given EDIT_PARAM_NAMES index.
 // Returns -1 if the param has no live getter.
 static int ReadEditValue(COPMEmuAdapter* a, int paramIdx) {
@@ -423,7 +396,7 @@ void CDX21Display::RenderPlayMode() {
 
     int voiceNum = m_VoiceNum;
     if (m_pAdapter) {
-        m_pAdapter->getInstrumentName(nameBuf);
+        m_pAdapter->getInstrumentName(nameBuf, sizeof(nameBuf));
         voiceNum = m_pAdapter->getInstrument() + 1;
     } else if (m_VoiceName) {
         strncpy(nameBuf, m_VoiceName, sizeof(nameBuf) - 1);
@@ -500,7 +473,7 @@ void CDX21Display::RenderPerformanceMode() {
     char nameBuf[17] = {0};
 
     if (m_pAdapter) {
-        m_pAdapter->getInstrumentName(nameBuf);
+        m_pAdapter->getInstrumentName(nameBuf, sizeof(nameBuf));
     } else if (m_VoiceName) {
         strncpy(nameBuf, m_VoiceName, sizeof(nameBuf) - 1);
         nameBuf[sizeof(nameBuf) - 1] = '\0';

@@ -27,7 +27,7 @@ EXTRACLEAN = $(OBJS) $(OBJS:.o=.d)
 # RPi 3/4/5 (Cortex-A53) tuning
 # Pull ARCH from Config.mk (set by ./configure in libs/circle-stdlib)
 ARCH ?= -DAARCH=64 -mcpu=cortex-a53 -mlittle-endian
-CFLAGS_FOR_TARGET ?= $(ARCH) -D__circle__ -DRASPPI=3 -DREALTIME -DSAVE_VFP_REGS_ON_IRQ -DSCREEN_DMA_BURST_LENGTH=1
+CFLAGS_FOR_TARGET ?= $(ARCH) -DRASPPI=3 -DREALTIME -DSAVE_VFP_REGS_ON_IRQ -DSCREEN_DMA_BURST_LENGTH=1
 CXXFLAGS_FOR_TARGET ?= $(CFLAGS_FOR_TARGET)
 
 include ./Synth_OPM.mk
@@ -44,6 +44,8 @@ include ./Rules.mk
 STANDARD := -std=gnu++17 -Wno-aligned-new -Wno-psabi
 CXXFLAGS := $(filter-out -std=c++14 -std=gnu++14 -std=c++11 -std=gnu++11,$(CXXFLAGS))
 CXXFLAGS += $(STANDARD)
+CFLAGS_FOR_TARGET := $(filter-out -D__circle__%,$(CFLAGS_FOR_TARGET))
+CXXFLAGS_FOR_TARGET := $(filter-out -D__circle__%,$(CXXFLAGS_FOR_TARGET))
 CFLAGS += $(CFLAGS_FOR_TARGET)
 CXXFLAGS += $(CXXFLAGS_FOR_TARGET)
 

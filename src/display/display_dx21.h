@@ -148,13 +148,6 @@ private:
     Config             m_Config;
     CSSD1305SPIDisplay* m_pDisplay;
 
-    // m_bDirty + time tracking. Render() re-reads the synth values
-    // each time it redraws, so the only "stale" data is when nothing
-    // causes a Set*() call. For MIDI-driven changes (Program Change,
-    // CC#0 Bank Select) to be visible without user interaction,
-    // RunCore2() calls InvalidateIfStale(200) every 200ms.
-    unsigned    m_LastRenderMs;
-
     // Display state.
     DX21UI::Mode m_Mode;
     int          m_ParamIdx;
@@ -168,6 +161,14 @@ private:
     bool         m_bDirty;
 
     COPMEmuAdapter* m_pAdapter;
+
+    // m_LastRenderMs tracks wall time of the last successful Render().
+    // Render() re-reads the synth values each time it redraws, so the
+    // only "stale" data is when nothing causes a Set*() call. For
+    // MIDI-driven state changes (Program Change, CC#0 Bank Select)
+    // to be visible without explicit Set*() calls, RunCore2() calls
+    // InvalidateIfStale(200) every 200ms.
+    unsigned    m_LastRenderMs;
 
     u8           m_PageBuf[128];
 };
