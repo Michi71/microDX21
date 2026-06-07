@@ -242,6 +242,11 @@ bool CKernel::Initialize() {
             m_pDX21Display->SetParamIndex(0);
             m_pDX21Display->SetValue(50);
             m_pDX21Display->SetStatus("microDX21 ready");
+
+            // Bind the synth adapter so Render() can read live
+            // parameter values (voice name, play mode, EDIT-mode
+            // 0..255 byte values, etc.) directly from the synth.
+            m_pDX21Display->SetAdapter(m_pMicroDX21->GetOPMEmuAdapter());
             m_pDX21Display->Render();
         } else {
             CLogger::Get()->Write("kernel", LogWarning, "Display init failed");

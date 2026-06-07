@@ -1,9 +1,9 @@
-// ============================================================================
+//
 // display_dx21.h
 //
 // CDX21Display - thin wrapper around CSSD1305SPIDisplay (128x32 monochrome)
-// that renders the 6 DX21 modes (PLAY, EDIT, PERFORMANCE, FUNCTION, MEMORY,
-// COMPARE) using the original ROM's display layout from
+// that renders the 6 DX21 modes (PLAY/EDIT/PERFORMANCE/FUNCTION/MEMORY)
+// using the original ROM's display layout from
 // src/opm/firmware/dx21_rom_v1_5.asm.
 //
 // Layout (128x32 = 4 pages, 8 rows per page):
@@ -11,24 +11,26 @@
 //   +--------------------------------------------------+
 //   | <MODE TITLE 16 chars>     (page 0,  rows 0-7)   |  <- mode title
 //   | <VALUE 8x16 big digit>     (page 0+1, glyph 16)  |
-//   | <PARAM NAME 16 chars>     (page 2,  rows 16-23) |  <- param name
+//   | <PARAM NAME 16 chars>     (page 2,  rows 16-23) |  <- parameter name
 //   | <STATUS 16 chars>         (page 3,  rows 24-31) |  <- status line
 //   +--------------------------------------------------+
 //
 // Top 16 rows: 16 chars of small text (mode title) using font6x8 OR
 //              a 7-segment digit/value using dx21_ui_7seg.h.
 //
-// Bottom 16 rows: 16 chars of small text (param name + status).
+// Bottom 16 rows: 16 chars of small text (parameter name and status).
 //
-// Threading: this class is not internally locked. The caller (kernel.cpp's
-// display thread on core 2) is responsible for not calling Render() from
-// more than one context. Audio core must NOT touch this class.
-// ============================================================================
+// The display reads live parameter values from a COPMEmuAdapter (set via
+// SetAdapter after CMicroDX21 is constructed in the kernel). All getters on
+// COPMEmuAdapter are thread-safe to call from the display thread; the
+// audio thread only writes through SPSC queues and the SysEx deferred
+// worker, never through the adapter's public surface.
+//
 
 #ifndef _display_dx21_h
 #define _display_dx21_h
 
-#include "ssd1305spidisplay.h"
+#include <ssd1305spidisplay.h>
 #include <circle/spimaster.h>
 #include <circle/gpiopin.h>
 #include <circle/types.h>
@@ -36,6 +38,8 @@
 
 #include "../opm/dx21_ui_strings.h"
 #include "../opm/dx21_ui_7seg.h"
+
+class COPMEmuAdapter;
 
 class CDX21Display {
 public:
@@ -63,53 +67,60 @@ public:
     void On()  { if (m_pDisplay) m_pDisplay->On(); }
     void Off() { if (m_pDisplay) m_pDisplay->Off(); }
 
-    // The current display mode (matches the original ROM's $1C65 byte).
+    // ───────────────────────────────────────────────
+    // State setters
+    // ───────────────────────────────────────────────
     void SetMode(DX21UI::Mode mode)         { m_Mode = mode; MarkDirty(); }
     DX21UI::Mode GetMode() const            { return m_Mode; }
 
-    // Sub-state: which parameter index is selected in EDIT/FUNCTION, or
-    // which voice number in PLAY. Range depends on mode.
     void SetParamIndex(int idx)             { m_ParamIdx = idx; MarkDirty(); }
     int  GetParamIndex() const              { return m_ParamIdx; }
 
-    // Current value of the selected parameter. -1 = "no numeric value,
-    // show string instead" (e.g. ON/OFF in a toggle parameter).
     void SetValue(int v)                    { m_Value = v; MarkDirty(); }
     int  GetValue() const                   { return m_Value; }
 
-    // For string-valued params (chorus on/off, lfo wave, etc.).
     void SetValueString(const char* s)      { m_ValueStr = s; MarkDirty(); }
     const char* GetValueString() const      { return m_ValueStr; }
 
-    // Voice name shown in PLAY mode (up to 16 chars).
     void SetVoiceName(const char* name)     { m_VoiceName = name; MarkDirty(); }
     const char* GetVoiceName() const        { return m_VoiceName; }
 
-    // Voice/program number in PLAY mode (1..128).
     void SetVoiceNumber(int n)              { m_VoiceNum = n; MarkDirty(); }
     int  GetVoiceNumber() const             { return m_VoiceNum; }
 
-    // For status line (page 3): errors, MIDI status, memory protect warning.
     void SetStatus(const char* s)           { m_Status = s; MarkDirty(); }
     void ClearStatus()                      { m_Status = nullptr; MarkDirty(); }
 
-    // Compare overlay flag (ROM's $1C65 compare bit).
     void SetCompare(bool on)                { m_bCompare = on; MarkDirty(); }
     bool GetCompare() const                 { return m_bCompare; }
 
-    // Memory protect flag.
     void SetMemoryProtect(bool on)          { m_bMemProt = on; MarkDirty(); }
     bool GetMemoryProtect() const           { return m_bMemProt; }
 
-    // Re-render the framebuffer. Call this from the display thread after any
-    // Set* call. Internally skips the work if nothing changed and the
-    // framebuffer is up-to-date on the panel.
+    // ───────────────────────────────────────────────
+    // Synth binding
+    // ───────────────────────────────────────────────
+    // Once a COPMEmuAdapter is bound, Render() reads live parameter
+    // values and the current voice name from the synth. Until bound
+    // (or if the adapter is destroyed), Render() falls back to the
+    // m_VoiceName / m_Value setters above.
+    void SetAdapter(COPMEmuAdapter* pAdapter);
+    COPMEmuAdapter* GetAdapter() const      { return m_pAdapter; }
+
+    // ───────────────────────────────────────────────
+    // Rendering
+    // ───────────────────────────────────────────────
     void Render();
 
-    // Force a full redraw on next Render() (e.g. after wakeup).
+    // Force a re-render if the last one is older than maxAgeMs.
+    // Cheap (~ns comparison) and lets MIDI-driven state changes
+    // become visible without explicit Set*() calls.
+    void InvalidateIfStale(unsigned maxAgeMs);
+
+    // Mark the framebuffer dirty. Caller should ensure the synth
+    // has changed before calling this, or use InvalidateIfStale().
     void Invalidate()                       { m_bDirty = true; }
 
-    // Direct access for tests / custom draw.
     CSSD1305SPIDisplay* GetDisplay()        { return m_pDisplay; }
 
 private:
@@ -125,9 +136,24 @@ private:
     void DrawHLine(int x, int y, int w);
     void DrawVLine(int x, int y, int h);
 
+    // Mode-specific render helpers. Each writes to the framebuffer
+    // for the four 8-row pages.
+    void RenderPlayMode();
+    void RenderEditMode();
+    void RenderPerformanceMode();
+    void RenderFunctionMode();
+    void RenderMemoryMode();
+
     CSPIMaster*        m_pSPI;
     Config             m_Config;
     CSSD1305SPIDisplay* m_pDisplay;
+
+    // m_bDirty + time tracking. Render() re-reads the synth values
+    // each time it redraws, so the only "stale" data is when nothing
+    // causes a Set*() call. For MIDI-driven changes (Program Change,
+    // CC#0 Bank Select) to be visible without user interaction,
+    // RunCore2() calls InvalidateIfStale(200) every 200ms.
+    unsigned    m_LastRenderMs;
 
     // Display state.
     DX21UI::Mode m_Mode;
@@ -141,7 +167,8 @@ private:
     bool         m_bMemProt;
     bool         m_bDirty;
 
-    // Page-row scratch buffer (one page = 128 bytes).
+    COPMEmuAdapter* m_pAdapter;
+
     u8           m_PageBuf[128];
 };
 
