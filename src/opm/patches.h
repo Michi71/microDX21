@@ -16,7 +16,17 @@ static const uint8_t CRS_TO_MUL[64] = {
 // DX21 DET (0-6: 0=-3,1=-2,2=-1,3=0,4=+1,5=+2,6=+3) → YM2151 DT1 (0-7)
 static const uint8_t DET_TO_DT1[7] = {7, 6, 5, 0, 1, 2, 3};
 
-// DX21 VCED operator parameters (raw, not yet converted to YM2151 registers)
+// DX21 VCED operator parameters. The byte ranges are DX21-native (e.g.
+// det=3 means "0 cents", not "DT1=0"); conversion to YM2151 register
+// values happens at three sites: applyPatchToVoice() at patch load,
+// applyTL() at every note-on (for LS/KVS, which are per-note), and
+// writeVcedOperator() for live edits. See opmemu.cpp for the
+// conversion tables (DET_TO_DT1, CRS_TO_MUL) and the OPP TL-ramp
+// (bit 7 of reg 0x60).
+//
+// `ebs` (EG Bias Sensitivity) has no YM2151 register equivalent and
+// is stored but not applied to the audio output. `lfo_delay` and
+// `lfo_sync` on the voice struct have the same caveat.
 typedef struct {
     uint8_t ar;      // Attack Rate (0-31)
     uint8_t d1r;     // Decay 1 Rate (0-31)
