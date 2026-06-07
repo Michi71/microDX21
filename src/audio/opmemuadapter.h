@@ -96,6 +96,60 @@ enum DX21ParamIndex {
     kParamOp3Out,
     kParamOp3CRS,
 
+    // Per-operator extended EG / level / velocity params. 8 per op × 4 ops = 32.
+    // Indices 37..68.
+    kParamOp0D2R,
+    kParamOp0RR,
+    kParamOp0LS,
+    kParamOp0RS,
+    kParamOp0EBS,
+    kParamOp0AME,
+    kParamOp0KVS,
+    kParamOp0DET,
+
+    kParamOp1D2R,
+    kParamOp1RR,
+    kParamOp1LS,
+    kParamOp1RS,
+    kParamOp1EBS,
+    kParamOp1AME,
+    kParamOp1KVS,
+    kParamOp1DET,
+
+    kParamOp2D2R,
+    kParamOp2RR,
+    kParamOp2LS,
+    kParamOp2RS,
+    kParamOp2EBS,
+    kParamOp2AME,
+    kParamOp2KVS,
+    kParamOp2DET,
+
+    kParamOp3D2R,
+    kParamOp3RR,
+    kParamOp3LS,
+    kParamOp3RS,
+    kParamOp3EBS,
+    kParamOp3AME,
+    kParamOp3KVS,
+    kParamOp3DET,
+
+    // Global LFO modulation sensitivity. Indices 69..70.
+    kParamPMS,              // 0..7
+    kParamAMS,              // 0..3
+
+    // Per-voice global non-VCED params. Indices 71..77.
+    kParamKeyOffset,        // 0..1 → -24..+24 semitones (centre at 0.5)
+    kParamMasterTune,       // 0..1 → -64..+63 (centre at 0.5)
+    kParamMono,             // 0/1
+    kParamPBMode,           // 0..3 (All/Low/High/K-on)
+
+    // Breath controller (DX21 breath / wind controller mappings). 78..81.
+    kParamBreathPitchBias,  // 0..99
+    kParamBreathAmp,        // 0..99
+    kParamBreathEGBias,     // 0..99
+    kParamBreathEGDepth,    // 0..99
+
     kParamTotalCount
 };
 
@@ -265,20 +319,109 @@ public:
                 break;
             }
 
-            // Per-operator parameters (AR, D1R, D1L, OUT, CRS)
-            // Each op block is 5 consecutive indices
-            #define DX21_OP_PARAMS(op_idx, base) \
-                case base:   m_synth->writeVcedOperator(op_idx, 0, (uint8_t)(value * 31.0f)); break; /* AR */  \
-                case base+1: m_synth->writeVcedOperator(op_idx, 2, (uint8_t)(value * 31.0f)); break; /* D1R */ \
-                case base+2: m_synth->writeVcedOperator(op_idx, 8, (uint8_t)(value * 15.0f)); break; /* D1L */ \
-                case base+3: m_synth->writeVcedOperator(op_idx, 10, (uint8_t)(value * 99.0f)); break;/* OUT */ \
-                case base+4: m_synth->writeVcedOperator(op_idx, 11, (uint8_t)(value * 63.0f)); break;/* CRS */
+            // Per-operator parameters. 13 per op × 4 ops = 52 cases,
+            // written out longhand to avoid the macro case-value
+            // collision when the op index increments.
+            case kParamOp0AR:  m_synth->writeVcedOperator(0, 0,  (uint8_t)(value * 31.0f)); break; /* AR  */
+            case kParamOp0D1R: m_synth->writeVcedOperator(0, 2,  (uint8_t)(value * 31.0f)); break; /* D1R */
+            case kParamOp0D1L: m_synth->writeVcedOperator(0, 8,  (uint8_t)(value * 15.0f)); break; /* D1L */
+            case kParamOp0Out: m_synth->writeVcedOperator(0, 10, (uint8_t)(value * 99.0f)); break; /* OUT */
+            case kParamOp0CRS: m_synth->writeVcedOperator(0, 11, (uint8_t)(value * 63.0f)); break; /* CRS */
+            case kParamOp0D2R: m_synth->writeVcedOperator(0, 1,  (uint8_t)(value * 31.0f)); break; /* D2R */
+            case kParamOp0RR:  m_synth->writeVcedOperator(0, 3,  (uint8_t)(value * 15.0f)); break; /* RR  */
+            case kParamOp0LS:  m_synth->writeVcedOperator(0, 5,  (uint8_t)(value * 99.0f)); break; /* LS  */
+            case kParamOp0RS:  m_synth->writeVcedOperator(0, 6,  (uint8_t)(value * 3.0f));  break; /* RS  */
+            case kParamOp0EBS: m_synth->writeVcedOperator(0, 7,  (uint8_t)(value * 7.0f));  break; /* EBS */
+            case kParamOp0AME: m_synth->writeVcedOperator(0, 13, (uint8_t)(value > 0.5f ? 1 : 0)); break; /* AME 0/1 */ /* AME 0/1 */
+            case kParamOp0KVS: m_synth->writeVcedOperator(0, 9,  (uint8_t)(value * 7.0f));  break; /* KVS */
+            case kParamOp0DET: m_synth->writeVcedOperator(0, 12, (uint8_t)(value * 6.0f));  break; /* DET (0..6) */
 
-            DX21_OP_PARAMS(0, kParamOp0AR)
-            DX21_OP_PARAMS(1, kParamOp1AR)
-            DX21_OP_PARAMS(2, kParamOp2AR)
-            DX21_OP_PARAMS(3, kParamOp3AR)
-            #undef DX21_OP_PARAMS
+            case kParamOp1AR:  m_synth->writeVcedOperator(1, 0,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp1D1R: m_synth->writeVcedOperator(1, 2,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp1D1L: m_synth->writeVcedOperator(1, 8,  (uint8_t)(value * 15.0f)); break;
+            case kParamOp1Out: m_synth->writeVcedOperator(1, 10, (uint8_t)(value * 99.0f)); break;
+            case kParamOp1CRS: m_synth->writeVcedOperator(1, 11, (uint8_t)(value * 63.0f)); break;
+            case kParamOp1D2R: m_synth->writeVcedOperator(1, 1,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp1RR:  m_synth->writeVcedOperator(1, 3,  (uint8_t)(value * 15.0f)); break;
+            case kParamOp1LS:  m_synth->writeVcedOperator(1, 5,  (uint8_t)(value * 99.0f)); break;
+            case kParamOp1RS:  m_synth->writeVcedOperator(1, 6,  (uint8_t)(value * 3.0f));  break;
+            case kParamOp1EBS: m_synth->writeVcedOperator(1, 7,  (uint8_t)(value * 7.0f));  break;
+            case kParamOp1AME: m_synth->writeVcedOperator(1, 13, (uint8_t)(value > 0.5f ? 1 : 0)); break; /* AME 0/1 */
+            case kParamOp1KVS: m_synth->writeVcedOperator(1, 9,  (uint8_t)(value * 7.0f));  break;
+            case kParamOp1DET: m_synth->writeVcedOperator(1, 12, (uint8_t)(value * 6.0f));  break;
+
+            case kParamOp2AR:  m_synth->writeVcedOperator(2, 0,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp2D1R: m_synth->writeVcedOperator(2, 2,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp2D1L: m_synth->writeVcedOperator(2, 8,  (uint8_t)(value * 15.0f)); break;
+            case kParamOp2Out: m_synth->writeVcedOperator(2, 10, (uint8_t)(value * 99.0f)); break;
+            case kParamOp2CRS: m_synth->writeVcedOperator(2, 11, (uint8_t)(value * 63.0f)); break;
+            case kParamOp2D2R: m_synth->writeVcedOperator(2, 1,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp2RR:  m_synth->writeVcedOperator(2, 3,  (uint8_t)(value * 15.0f)); break;
+            case kParamOp2LS:  m_synth->writeVcedOperator(2, 5,  (uint8_t)(value * 99.0f)); break;
+            case kParamOp2RS:  m_synth->writeVcedOperator(2, 6,  (uint8_t)(value * 3.0f));  break;
+            case kParamOp2EBS: m_synth->writeVcedOperator(2, 7,  (uint8_t)(value * 7.0f));  break;
+            case kParamOp2AME: m_synth->writeVcedOperator(2, 13, (uint8_t)(value > 0.5f ? 1 : 0)); break; /* AME 0/1 */
+            case kParamOp2KVS: m_synth->writeVcedOperator(2, 9,  (uint8_t)(value * 7.0f));  break;
+            case kParamOp2DET: m_synth->writeVcedOperator(2, 12, (uint8_t)(value * 6.0f));  break;
+
+            case kParamOp3AR:  m_synth->writeVcedOperator(3, 0,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp3D1R: m_synth->writeVcedOperator(3, 2,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp3D1L: m_synth->writeVcedOperator(3, 8,  (uint8_t)(value * 15.0f)); break;
+            case kParamOp3Out: m_synth->writeVcedOperator(3, 10, (uint8_t)(value * 99.0f)); break;
+            case kParamOp3CRS: m_synth->writeVcedOperator(3, 11, (uint8_t)(value * 63.0f)); break;
+            case kParamOp3D2R: m_synth->writeVcedOperator(3, 1,  (uint8_t)(value * 31.0f)); break;
+            case kParamOp3RR:  m_synth->writeVcedOperator(3, 3,  (uint8_t)(value * 15.0f)); break;
+            case kParamOp3LS:  m_synth->writeVcedOperator(3, 5,  (uint8_t)(value * 99.0f)); break;
+            case kParamOp3RS:  m_synth->writeVcedOperator(3, 6,  (uint8_t)(value * 3.0f));  break;
+            case kParamOp3EBS: m_synth->writeVcedOperator(3, 7,  (uint8_t)(value * 7.0f));  break;
+            case kParamOp3AME: m_synth->writeVcedOperator(3, 13, (uint8_t)(value > 0.5f ? 1 : 0)); break; /* AME 0/1 */
+            case kParamOp3KVS: m_synth->writeVcedOperator(3, 9,  (uint8_t)(value * 7.0f));  break;
+            case kParamOp3DET: m_synth->writeVcedOperator(3, 12, (uint8_t)(value * 6.0f));  break;
+
+            // Global LFO modulation sensitivity.
+            case kParamPMS:
+                // PMS only (0..7). AMS stays at its current value.
+                {
+                    const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                    int pms = (int)(value * 7.0f);
+                    int ams = p ? (p->ams & 0x03) : 0;
+                    m_synth->writeVcedGlobal(12, (uint8_t)((pms << 4) | ams));
+                }
+                break;
+            case kParamAMS:
+                {
+                    const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                    int pms = p ? (p->pms & 0x07) : 0;
+                    int ams = (int)(value * 3.0f);
+                    m_synth->writeVcedGlobal(12, (uint8_t)((pms << 4) | ams));
+                }
+                break;
+
+            // Non-VCED global parameters.
+            case kParamKeyOffset: {
+                // 0..1 → -24..+24, centre at 0.5 → 0.
+                int v = (int)(value * 49.0f) - 24;
+                m_synth->writeVcedGlobal(13, (uint8_t)(v + 24));
+                break;
+            }
+            case kParamMasterTune: {
+                // 0..1 → -64..+63, centre at 0.5 → 0.
+                int v = (int)(value * 128.0f) - 64;
+                m_synth->setMasterTune(v);
+                break;
+            }
+            case kParamMono:
+                m_synth->setMono(value > 0.5f);
+                break;
+            case kParamPBMode: {
+                int mode = (int)(value * 3.99f);  // 0..3
+                m_synth->setPBMode(mode);
+                break;
+            }
+            case kParamBreathPitchBias: m_synth->setBreathPitchBias((int)(value * 99.0f)); break;
+            case kParamBreathAmp:       m_synth->setBreathAmplitude((int)(value * 99.0f)); break;
+            case kParamBreathEGBias:    m_synth->setBreathEGBias((int)(value * 99.0f));     break;
+            case kParamBreathEGDepth:   m_synth->setBreathEGDepth((int)(value * 99.0f));    break;
 
             default:
                 break;
@@ -338,19 +481,96 @@ public:
                 return p ? (float)p->lfo_wave / 3.0f : 0.0f;
             }
 
-            // Per-operator reads from current patch
-            #define DX21_OP_GET(op_idx, base) \
-                case base:   { const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram()); return p ? (float)p->op[op_idx].ar / 31.0f : 0.0f; }  \
-                case base+1: { const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram()); return p ? (float)p->op[op_idx].d1r / 31.0f : 0.0f; }  \
-                case base+2: { const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram()); return p ? (float)p->op[op_idx].d1l / 15.0f : 0.0f; }  \
-                case base+3: { const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram()); return p ? (float)p->op[op_idx].out / 99.0f : 0.0f; }  \
-                case base+4: { const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram()); return p ? (float)p->op[op_idx].crs / 63.0f : 0.0f; }
+            // Per-operator reads from current patch. 13 cases per op ×
+            // 4 ops = 52 cases, written out longhand to avoid the macro
+            // case-value collision when the op index increments.
+            // Uses a tiny helper macro to keep the noise down.
+            #define DX21_PATCH_PTR() \
+                const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram()); \
+                if (!p) return 0.0f
 
-            DX21_OP_GET(0, kParamOp0AR)
-            DX21_OP_GET(1, kParamOp1AR)
-            DX21_OP_GET(2, kParamOp2AR)
-            DX21_OP_GET(3, kParamOp3AR)
-            #undef DX21_OP_GET
+            case kParamOp0AR:  { DX21_PATCH_PTR(); return (float)p->op[0].ar  / 31.0f; }
+            case kParamOp0D1R: { DX21_PATCH_PTR(); return (float)p->op[0].d1r / 31.0f; }
+            case kParamOp0D1L: { DX21_PATCH_PTR(); return (float)p->op[0].d1l / 15.0f; }
+            case kParamOp0Out: { DX21_PATCH_PTR(); return (float)p->op[0].out / 99.0f; }
+            case kParamOp0CRS: { DX21_PATCH_PTR(); return (float)p->op[0].crs / 63.0f; }
+            case kParamOp0D2R: { DX21_PATCH_PTR(); return (float)p->op[0].d2r / 31.0f; }
+            case kParamOp0RR:  { DX21_PATCH_PTR(); return (float)p->op[0].rr  / 15.0f; }
+            case kParamOp0LS:  { DX21_PATCH_PTR(); return (float)p->op[0].ls  / 99.0f; }
+            case kParamOp0RS:  { DX21_PATCH_PTR(); return (float)p->op[0].rs  / 3.0f;  }
+            case kParamOp0EBS: { DX21_PATCH_PTR(); return (float)p->op[0].ebs / 7.0f;  }
+            case kParamOp0AME: { DX21_PATCH_PTR(); return p->op[0].ame ? 1.0f : 0.0f; }
+            case kParamOp0KVS: { DX21_PATCH_PTR(); return (float)p->op[0].kvs / 7.0f;  }
+            case kParamOp0DET: { DX21_PATCH_PTR(); return (float)p->op[0].det / 6.0f;  }
+
+            case kParamOp1AR:  { DX21_PATCH_PTR(); return (float)p->op[1].ar  / 31.0f; }
+            case kParamOp1D1R: { DX21_PATCH_PTR(); return (float)p->op[1].d1r / 31.0f; }
+            case kParamOp1D1L: { DX21_PATCH_PTR(); return (float)p->op[1].d1l / 15.0f; }
+            case kParamOp1Out: { DX21_PATCH_PTR(); return (float)p->op[1].out / 99.0f; }
+            case kParamOp1CRS: { DX21_PATCH_PTR(); return (float)p->op[1].crs / 63.0f; }
+            case kParamOp1D2R: { DX21_PATCH_PTR(); return (float)p->op[1].d2r / 31.0f; }
+            case kParamOp1RR:  { DX21_PATCH_PTR(); return (float)p->op[1].rr  / 15.0f; }
+            case kParamOp1LS:  { DX21_PATCH_PTR(); return (float)p->op[1].ls  / 99.0f; }
+            case kParamOp1RS:  { DX21_PATCH_PTR(); return (float)p->op[1].rs  / 3.0f;  }
+            case kParamOp1EBS: { DX21_PATCH_PTR(); return (float)p->op[1].ebs / 7.0f;  }
+            case kParamOp1AME: { DX21_PATCH_PTR(); return p->op[1].ame ? 1.0f : 0.0f; }
+            case kParamOp1KVS: { DX21_PATCH_PTR(); return (float)p->op[1].kvs / 7.0f;  }
+            case kParamOp1DET: { DX21_PATCH_PTR(); return (float)p->op[1].det / 6.0f;  }
+
+            case kParamOp2AR:  { DX21_PATCH_PTR(); return (float)p->op[2].ar  / 31.0f; }
+            case kParamOp2D1R: { DX21_PATCH_PTR(); return (float)p->op[2].d1r / 31.0f; }
+            case kParamOp2D1L: { DX21_PATCH_PTR(); return (float)p->op[2].d1l / 15.0f; }
+            case kParamOp2Out: { DX21_PATCH_PTR(); return (float)p->op[2].out / 99.0f; }
+            case kParamOp2CRS: { DX21_PATCH_PTR(); return (float)p->op[2].crs / 63.0f; }
+            case kParamOp2D2R: { DX21_PATCH_PTR(); return (float)p->op[2].d2r / 31.0f; }
+            case kParamOp2RR:  { DX21_PATCH_PTR(); return (float)p->op[2].rr  / 15.0f; }
+            case kParamOp2LS:  { DX21_PATCH_PTR(); return (float)p->op[2].ls  / 99.0f; }
+            case kParamOp2RS:  { DX21_PATCH_PTR(); return (float)p->op[2].rs  / 3.0f;  }
+            case kParamOp2EBS: { DX21_PATCH_PTR(); return (float)p->op[2].ebs / 7.0f;  }
+            case kParamOp2AME: { DX21_PATCH_PTR(); return p->op[2].ame ? 1.0f : 0.0f; }
+            case kParamOp2KVS: { DX21_PATCH_PTR(); return (float)p->op[2].kvs / 7.0f;  }
+            case kParamOp2DET: { DX21_PATCH_PTR(); return (float)p->op[2].det / 6.0f;  }
+
+            case kParamOp3AR:  { DX21_PATCH_PTR(); return (float)p->op[3].ar  / 31.0f; }
+            case kParamOp3D1R: { DX21_PATCH_PTR(); return (float)p->op[3].d1r / 31.0f; }
+            case kParamOp3D1L: { DX21_PATCH_PTR(); return (float)p->op[3].d1l / 15.0f; }
+            case kParamOp3Out: { DX21_PATCH_PTR(); return (float)p->op[3].out / 99.0f; }
+            case kParamOp3CRS: { DX21_PATCH_PTR(); return (float)p->op[3].crs / 63.0f; }
+            case kParamOp3D2R: { DX21_PATCH_PTR(); return (float)p->op[3].d2r / 31.0f; }
+            case kParamOp3RR:  { DX21_PATCH_PTR(); return (float)p->op[3].rr  / 15.0f; }
+            case kParamOp3LS:  { DX21_PATCH_PTR(); return (float)p->op[3].ls  / 99.0f; }
+            case kParamOp3RS:  { DX21_PATCH_PTR(); return (float)p->op[3].rs  / 3.0f;  }
+            case kParamOp3EBS: { DX21_PATCH_PTR(); return (float)p->op[3].ebs / 7.0f;  }
+            case kParamOp3AME: { DX21_PATCH_PTR(); return p->op[3].ame ? 1.0f : 0.0f; }
+            case kParamOp3KVS: { DX21_PATCH_PTR(); return (float)p->op[3].kvs / 7.0f;  }
+            case kParamOp3DET: { DX21_PATCH_PTR(); return (float)p->op[3].det / 6.0f;  }
+            #undef DX21_PATCH_PTR
+
+            // Global LFO modulation sensitivity.
+            case kParamPMS: {
+                const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                return p ? (float)p->pms / 7.0f : 0.0f;
+            }
+            case kParamAMS: {
+                const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                return p ? (float)p->ams / 3.0f : 0.0f;
+            }
+
+            // Non-VCED global parameters.
+            case kParamKeyOffset: {
+                const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                if (!p) return 0.5f;  // centre
+                return ((float)p->key_offset + 24.0f) / 49.0f;
+            }
+            case kParamMasterTune: {
+                return ((float)m_synth->getMasterTune() + 64.0f) / 128.0f;
+            }
+            case kParamMono:        return m_synth->isMono() ? 1.0f : 0.0f;
+            case kParamPBMode:      return (float)m_synth->getPBMode() / 3.0f;
+            case kParamBreathPitchBias: return (float)m_synth->getBreathPitchBias() / 99.0f;
+            case kParamBreathAmp:       return (float)m_synth->getBreathAmplitude() / 99.0f;
+            case kParamBreathEGBias:    return (float)m_synth->getBreathEGBias()     / 99.0f;
+            case kParamBreathEGDepth:   return (float)m_synth->getBreathEGDepth()    / 99.0f;
 
             default: return 0.0f;
         }
@@ -368,14 +588,28 @@ public:
             "LFO Speed", "LFO Delay", "PMD", "AMD",
             // Voice (13-16)
             "Algorithm", "Feedback", "LFO Sync", "LFO Wave",
-            // OP0 (17-21)
+            // OP0 (17-29) -- core (17-21) + extended (22-29)
             "OP1 AR", "OP1 D1R", "OP1 D1L", "OP1 Out", "OP1 CRS",
-            // OP1 (22-26)
+            "OP1 D2R", "OP1 RR", "OP1 LS", "OP1 RS", "OP1 EBS",
+            "OP1 AME", "OP1 KVS", "OP1 DET",
+            // OP1 (30-42)
             "OP2 AR", "OP2 D1R", "OP2 D1L", "OP2 Out", "OP2 CRS",
-            // OP2 (27-31)
+            "OP2 D2R", "OP2 RR", "OP2 LS", "OP2 RS", "OP2 EBS",
+            "OP2 AME", "OP2 KVS", "OP2 DET",
+            // OP2 (43-55)
             "OP3 AR", "OP3 D1R", "OP3 D1L", "OP3 Out", "OP3 CRS",
-            // OP3 (32-36)
+            "OP3 D2R", "OP3 RR", "OP3 LS", "OP3 RS", "OP3 EBS",
+            "OP3 AME", "OP3 KVS", "OP3 DET",
+            // OP3 (56-68)
             "OP4 AR", "OP4 D1R", "OP4 D1L", "OP4 Out", "OP4 CRS",
+            "OP4 D2R", "OP4 RR", "OP4 LS", "OP4 RS", "OP4 EBS",
+            "OP4 AME", "OP4 KVS", "OP4 DET",
+            // LFO mod sensitivity (69-70)
+            "PMS", "AMS",
+            // Non-VCED global (71-77)
+            "Key Offset", "Master Tune", "Mono Mode", "PB Mode",
+            // Breath (78-81)
+            "BC Pitch", "BC Amp", "BC EG Bias", "BC EG Depth",
         };
         if (index < 0 || index >= kParamTotalCount) return "?";
         return kNames[index];

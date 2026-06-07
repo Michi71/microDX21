@@ -1786,6 +1786,26 @@ void COPMEmu::writeVcedGlobal(int param, uint8_t value)
             ramPatch->lfo_wave = value & 0x03;
             writeField(0x1B, 0, 2, ramPatch->lfo_wave);
             break;
+        case 12: // PMS (Pitch Mod Sensitivity, 0-7) + AMS (Amp Mod Sens, 0-3)
+            // VCED byte 8 is packed: (pms << 4) | ams. We re-use the
+            // high nibble (pms) and stash ams in the low nibble of a
+            // synthetic local; for the adapter we route them as two
+            // separate 0..1 params so the user can pick one at a time.
+            // In practice: pms uses the upper 4 bits of the byte, ams
+            // the lower 2 bits. We mirror that here so a future bulk
+            // dump round-trips.
+            ramPatch->pms = (value >> 4) & 0x07;
+            ramPatch->ams = value & 0x03;
+            {
+                uint8_t pms_ams = (ramPatch->pms << 4) | (ramPatch->ams & 0x03);
+                writeReg(0x38 + voice, pms_ams);
+            }
+            break;
+        case 13: // Key Offset / Transpose (0-48, offset 24 → -24..+24 semitones)
+            // Stored as int8_t in the patch. The adapter will pass
+            // 0..1 normalised, and we map to 0..48 with +24 centre.
+            ramPatch->key_offset = (int8_t)((int)value - 24);
+            break;
         default:
             break;
     }
@@ -1839,6 +1859,51 @@ void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
             {
                 uint8_t mul = CRS_TO_MUL[o.crs & 0x3F];
                 writeField(0x40 + slot, 0, 4, mul);
+            }
+            break;
+        case 1: // D2R (Decay 2 Rate, 0-31) -- register 0xC0[4:0]
+            o.d2r = value & 0x1F;
+            writeField(0xC0 + slot, 0, 5, o.d2r);
+            break;
+        case 3: // RR (Release Rate, 0-15) -- packed in 0xE0[3:0]
+            o.rr = value & 0x0F;
+            {
+                uint8_t d1l = 15 - (o.d1l & 0x0F);
+                uint8_t d1l_rr = (d1l << 4) | o.rr;
+                writeReg(0xE0 + slot, d1l_rr);
+            }
+            break;
+        case 5: // LS (Level Scaling, 0-99) -- no direct OPM reg, applied per-note
+            o.ls = value;
+            if (o.ls > 99) o.ls = 99;
+            break;
+        case 6: // RS (Rate Scaling, 0-3) -- packed in 0x80[7:6] with AR
+            o.rs = value & 0x03;
+            {
+                uint8_t ks_ar = ((o.rs & 0x03) << 6) | (o.ar & 0x1F);
+                writeReg(0x80 + slot, ks_ar);
+            }
+            break;
+        case 7: // EBS (EG Bias Sensitivity, 0-7) -- no direct OPM reg
+            o.ebs = value & 0x07;
+            break;
+        case 13: // AME (AM Enable, 0/1) -- bit 7 of 0xA0
+            o.ame = value & 0x01;
+            {
+                uint8_t ame_d1r = ((o.ame & 0x01) << 7) | (o.d1r & 0x1F);
+                writeReg(0xA0 + slot, ame_d1r);
+            }
+            break;
+        case 9: // KVS (Key Velocity Sensitivity, 0-7) -- no direct OPM reg
+            o.kvs = value & 0x07;
+            break;
+        case 12: // DET (Detune, 0-6: 0=-3,1=-2,2=-1,3=0,4=+1,5=+2,6=+3)
+            o.det = value & 0x07;
+            {
+                uint8_t dt1 = (o.det <= 6) ? DET_TO_DT1[o.det] : 0;
+                uint8_t mul = (o.crs < 64) ? CRS_TO_MUL[o.crs] : 15;
+                uint8_t dt1_mul = (dt1 << 4) | (mul & 0x0F);
+                writeReg(0x40 + slot, dt1_mul);
             }
             break;
         default:

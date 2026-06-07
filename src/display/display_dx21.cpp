@@ -39,42 +39,42 @@ static const char FromDisplay[] = "dx21disp";
 // Map: EDIT_PARAM_NAMES index -> DX21ParamIndex (or -1 if unavailable)
 // ────────────────────────────────────────────────────────────────────
 static const int kEditToAdapter[] = {
-    /*  0  ALG                */  kParamAlgorithm,  // 13
-    /*  1  ALGORITHM SELECT   */  kParamAlgorithm,  // 13 (long form)
-    /*  2  FEEDBACK           */  kParamFeedback,    // 14
-    /*  3  LFO WAVE:          */  kParamLFOWave,      // 16
-    /*  4  LFO SPEED          */  kParamLFOSpeed,     // 9
-    /*  5  LFO DELAY          */  kParamLFODelay,     // 10
-    /*  6  LFO PMD            */  kParamPMD,          // 11
-    /*  7  LFO AMD            */  kParamAMD,          // 12
-    /*  8  P MOD SENS.        */  -1,                 // (no getter)
-    /*  9  A MOD SENS.        */  -1,
-    /* 10  E BIAS SENS.       */  -1,
-    /* 11  KEY VELOCITY       */  -1,
-    /* 12  FREQUENCY =        */  -1,
-    /* 13  DETUNE    =        */  -1,
-    /* 14  EG  AR (OP1)       */  kParamOp0AR,        // 17
+    /*  0  ALG                */  kParamAlgorithm,
+    /*  1  ALGORITHM SELECT   */  kParamAlgorithm,    // long form
+    /*  2  FEEDBACK           */  kParamFeedback,
+    /*  3  LFO WAVE:          */  kParamLFOWave,
+    /*  4  LFO SPEED          */  kParamLFOSpeed,
+    /*  5  LFO DELAY          */  kParamLFODelay,
+    /*  6  LFO PMD            */  kParamPMD,
+    /*  7  LFO AMD            */  kParamAMD,
+    /*  8  P MOD SENS.        */  kParamPMS,          // 0..7
+    /*  9  A MOD SENS.        */  kParamAMS,          // 0..3
+    /* 10  E BIAS SENS.       */  kParamOp0EBS,       // OP1 EBS
+    /* 11  KEY VELOCITY       */  kParamOp0KVS,       // OP1 KVS
+    /* 12  FREQUENCY =        */  kParamOp0CRS,       // OP1 CRS
+    /* 13  DETUNE    =        */  kParamOp0DET,       // OP1 DET
+    /* 14  EG  AR (OP1)       */  kParamOp0AR,
     /* 15  EG  D1R            */  kParamOp0D1R,
     /* 16  EG  D1L            */  kParamOp0D1L,
-    /* 17  EG  D2R            */  -1,
-    /* 18  EG  RR             */  -1,
-    /* 19  OUTPUT LEVEL       */  kParamOp0Out,       // 20
-    /* 20  RATE SCALE         */  -1,
-    /* 21  LEVEL SCALE        */  -1,
-    /* 22  PEG RATE 1         */  -1,
+    /* 17  EG  D2R            */  kParamOp0D2R,
+    /* 18  EG  RR             */  kParamOp0RR,
+    /* 19  OUTPUT LEVEL       */  kParamOp0Out,
+    /* 20  RATE SCALE         */  kParamOp0RS,        // OP1 RS (0..3)
+    /* 21  LEVEL SCALE        */  kParamOp0LS,        // OP1 LS (0..99)
+    /* 22  PEG RATE 1         */  -1,                 // OPM has no PEG
     /* 23  PEG LEVEL 1        */  -1,
     /* 24  PEG RATE 2         */  -1,
     /* 25  PEG LEVEL 2        */  -1,
     /* 26  PEG RATE 3         */  -1,
     /* 27  PEG LEVEL 3        */  -1,
-    /* 28  SAW UP             */  kParamLFOWave,      // 16 (sets wave=0)
-    /* 29  SQUARE             */  kParamLFOWave,      // 16 (sets wave=1)
-    /* 30  TRIANGL            */  kParamLFOWave,      // 16 (sets wave=2)
-    /* 31  S/HOLD             */  kParamLFOWave,      // 16 (sets wave=3)
-    /* 32  EG Copy            */  -1,                 // utility, not a param
-    /* 33  from OP            */  -1,
-    /* 34  LFO SYNC :         */  kParamLFOSync,      // 15
-    /* 35  Memory Protected   */  -1,                 // global flag
+    /* 28  SAW UP             */  kParamLFOWave,      // wave=0
+    /* 29  SQUARE             */  kParamLFOWave,      // wave=1
+    /* 30  TRIANGL            */  kParamLFOWave,      // wave=2
+    /* 31  S/HOLD             */  kParamLFOWave,      // wave=3
+    /* 32  EG Copy            */  -1,                 // utility
+    /* 33  from OP            */  -1,                 // utility
+    /* 34  LFO SYNC :         */  kParamLFOSync,
+    /* 35  Memory Protected   */  -1,                 // handled by m_bMemProt
 };
 static_assert(sizeof(kEditToAdapter)/sizeof(kEditToAdapter[0]) == EDIT_PARAM_COUNT,
               "kEditToAdapter must match EDIT_PARAM_COUNT");
@@ -96,51 +96,51 @@ static_assert(sizeof(kEditToAdapter)/sizeof(kEditToAdapter[0]) == EDIT_PARAM_COU
 // ────────────────────────────────────────────────────────────────────
 static const int kFunctionToAdapter[] = {
     /*  0  FUNCTION CONTROL   */  -1,    // header
-    /*  1  Master Tune =      */  -1,    // no getter (DX21 master tune is int -64..+63)
-    /*  2  Dual Detune        */  -1,
-    /*  3  Midi Switch :      */  -1,    // could be ON/OFF when SysEx is bound
-    /*  4  Midi Ch Info:      */  -1,    // info display
-    /*  5  Midi Sy Info:      */  -1,
-    /*  6  Midi Recv Ch =     */  -1,
-    /*  7  Midi Omni : ON     */  -1,    // ON/OFF
-    /*  8  Recall Edit ?      */  -1,    // dialog
-    /*  9  Are You Sure ?     */  -1,
-    /* 10  Init. Voice ?      */  -1,
-    /* 11  Save to Tape ?     */  -1,
-    /* 12  from Mem to Tape   */  -1,
-    /* 13  Verify    Tape ?   */  -1,
-    /* 14  Verify Tape        */  -1,
-    /* 15  Load from Tape ?   */  -1,
-    /* 16  from Tape to Mem   */  -1,
-    /* 17  Load  Single ?     */  -1,
-    /* 18  Tape # ? to Buff   */  -1,
-    /* 19  Group to Bank ?    */  -1,
-    /* 20  Group (1-16) ?     */  -1,
-    /* 21  Bank (1-4) ?       */  -1,
-    /* 22  Voice to Buff  ?   */  -1,
-    /* 23  Mem Protect:       */  -1,    // boolean flag (separate state)
-    /* 24  Poly Mode          */  kParamPlayMode,    // Single/Dual/Split (3)
-    /* 25  Mono Mode          */  -1,    // boolean (single voice)
-    /* 26  P Bend Range       */  kParamPitchBendRange,  // 0..12
-    /* 27  Fingered Porta     */  -1,
-    /* 28  Full Time Porta    */  kParamPortamentoMode,  // Off/FullTime/Fingered
-    /* 29  Porta Time         */  kParamPortamentoRate,  // 0..99
-    /* 30  Foot Volume        */  -1,
+    /*  1  Master Tune =      */  kParamMasterTune,    // -64..+63
+    /*  2  Dual Detune        */  -1,                  // not implemented yet
+    /*  3  Midi Switch :      */  -1,                  // per-channel
+    /*  4  Midi Ch Info:      */  -1,                  // info display
+    /*  5  Midi Sy Info:      */  -1,                  // info display
+    /*  6  Midi Recv Ch =     */  -1,                  // per-channel
+    /*  7  Midi Omni : ON     */  -1,                  // per-channel
+    /*  8  Recall Edit ?      */  -1,                  // dialog
+    /*  9  Are You Sure ?     */  -1,                  // dialog
+    /* 10  Init. Voice ?      */  -1,                  // dialog
+    /* 11  Save to Tape ?     */  -1,                  // dialog
+    /* 12  from Mem to Tape   */  -1,                  // dialog
+    /* 13  Verify    Tape ?   */  -1,                  // dialog
+    /* 14  Verify Tape        */  -1,                  // dialog
+    /* 15  Load from Tape ?   */  -1,                  // dialog
+    /* 16  from Tape to Mem   */  -1,                  // dialog
+    /* 17  Load  Single ?     */  -1,                  // dialog
+    /* 18  Tape # ? to Buff   */  -1,                  // dialog
+    /* 19  Group to Bank ?    */  -1,                  // dialog
+    /* 20  Group (1-16) ?     */  -1,                  // dialog
+    /* 21  Bank (1-4) ?       */  -1,                  // dialog
+    /* 22  Voice to Buff  ?   */  -1,                  // dialog
+    /* 23  Mem Protect:       */  -1,                  // handled by m_bMemProt
+    /* 24  Poly Mode          */  kParamPlayMode,      // Single/Dual/Split
+    /* 25  Mono Mode          */  kParamMono,          // boolean
+    /* 26  P Bend Range       */  kParamPitchBendRange,
+    /* 27  Fingered Porta     */  kParamPortamentoMode,
+    /* 28  Full Time Porta    */  kParamPortamentoMode,
+    /* 29  Porta Time         */  kParamPortamentoRate,
+    /* 30  Foot Volume        */  -1,                  // no setter
     /* 31  Foot Sustain:      */  -1,
-    /* 32  Foot Porta  :      */  -1,
-    /* 33  MW Pitch           */  -1,
+    /* 32  Foot Porta  :      */  kParamPortamentoMode,
+    /* 33  MW Pitch           */  -1,                  // mod wheel
     /* 34  MW Amplitude       */  -1,
-    /* 35  BC Pitch           */  -1,
-    /* 36  BC Amplitude       */  -1,
-    /* 37  BC Pitch Bias      */  -1,
-    /* 38  BC EG Bias         */  -1,
-    /* 39  Middle C =         */  -1,
-    /* 40  Midi Trns Ch =     */  -1,    // no adapter getter
+    /* 35  BC Pitch           */  -1,                  // breath routing
+    /* 36  BC Amplitude       */  kParamBreathAmp,
+    /* 37  BC Pitch Bias      */  kParamBreathPitchBias,
+    /* 38  BC EG Bias         */  kParamBreathEGBias,
+    /* 39  Middle C =         */  kParamKeyOffset,     // closest analog
+    /* 40  Midi Trns Ch =     */  -1,                  // per-channel
     /* 41  Midi Transmit ?    */  -1,
-    /* 42  Chorus      :      */  kParamEnsemble,    // 0/1
-    /* 43  Bend Mode =        */  -1,
-    /* 44  Key Shift =        */  -1,
-    /* 45  Name :             */  -1,
+    /* 42  Chorus      :      */  kParamEnsemble,
+    /* 43  Bend Mode =        */  kParamPBMode,
+    /* 44  Key Shift =        */  kParamKeyOffset,
+    /* 45  Name :             */  -1,                  // string entry
 };
 static_assert(sizeof(kFunctionToAdapter)/sizeof(kFunctionToAdapter[0]) == FUNCTION_COUNT,
               "kFunctionToAdapter must match FUNCTION_COUNT");

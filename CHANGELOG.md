@@ -5,6 +5,14 @@ All notable changes to microDX21, in reverse chronological order.
 ## [Unreleased]
 
 ### Added
+- **Complete VCED parameter coverage**:
+  - `COPMEmu::writeVcedGlobal()` extended with cases for PMS+AMS (param 12, packed) and Key Offset (param 13).
+  - `COPMEmu::writeVcedOperator()` extended with cases for D2R (param 1), RR (param 3), LS (param 5), RS (param 6), EBS (param 7), AME (param 13, on 0xA0 bit 7), KVS (param 9), DET (param 12). AME is on a separate VCED param id from D1L because the two share register 0xE0 / 0xA0 in different ways.
+  - `DX21ParamIndex` enum grew from 37 to 78 entries (added: per-op D2R/RR/LS/RS/EBS/AME/KVS/DET × 4 = 32, plus PMS, AMS, KeyOffset, MasterTune, Mono, PBMode, Breath*4 = 9).
+  - `COPMEmuAdapter::setParameter()` and `getParameter()` cover all 78 entries. Setter for kParamPMS/kParamAMS preserves the other nibble when changing one. kParamKeyOffset maps 0..1 to -24..+24. kParamMasterTune maps 0..1 to -64..+63. kParamBreath* map 0..1 to 0..99.
+  - `kEditToAdapter[]` (36 entries) now has 26 live bindings (was 14): P MOD SENS, A MOD SENS, E BIAS SENS, KEY VELOCITY, FREQUENCY, DETUNE, EG D2R, EG RR, RATE SCALE, LEVEL SCALE all wired to OP1.
+  - `kFunctionToAdapter[]` (46 entries) now has 12 live bindings (was 9): Master Tune, Mono Mode, Fingered/Full Time/Foot Porta, BC Amplitude, BC Pitch Bias, BC EG Bias, Middle C, Bend Mode, Key Shift.
+
 - **Live encoder → synth parameter writes**:
   - `COPMEmuAdapter::kParamInstrument` (0): normalized 0..1 → program 0..N-1. New entry at the top of the enum; all other indices shifted by +1.
   - `CDX21Display::SelectParam(delta)` and `CDX21Display::AdjustValue(delta)`:
