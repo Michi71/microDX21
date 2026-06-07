@@ -191,9 +191,9 @@ public:
                         return false;
                 }
 
-                // USB-Initialisierung wurde nach CKernel::Initialize() verschoben,
-                // damit Host vs. Gadget-Mode zur Laufzeit entschieden werden kann
-                // (Config muss dafür bereits geladen sein).
+                // USB-Initialisierung: Host-Mode (DWC2/xHCI). USB-MIDI Gadget
+                // wird vom externen RP2350 "Comms" Prozessor (pico-midi-adapter)
+                // über UART bereitgestellt — keine In-Kernel-Gadget-Logik mehr.
 
                 if (!mConsole.Initialize ())
                 {

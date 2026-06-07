@@ -12,8 +12,7 @@
 
 CConfig::CConfig(FATFS* pFileSystem)
 : m_Properties("microdx21.ini", pFileSystem)
-, m_bUSBGadget(false)
-, m_nUSBGadgetPin(0)
+
 {
 }
 
@@ -60,8 +59,6 @@ void CConfig::Load()
     // ───────────────────────────────────────────────
     // USB
     // ───────────────────────────────────────────────
-    m_bUSBGadget = m_Properties.GetNumber("USBGadget", 0) != 0;
-    m_nUSBGadgetPin = m_Properties.GetNumber("USBGadgetPin", 0);
 
     // ───────────────────────────────────────────────
     // Master Volume

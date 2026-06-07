@@ -130,8 +130,6 @@ public:
     unsigned          GetPolyphony() const;
     unsigned          GetChunkSize() const;
     bool              IsStereoSwapped() const;
-    bool              IsUSBDeviceMode() const;
-    unsigned          GetUSBGadgetPin() const;
     const char*       GetFirmwareVersion() const;
 
     // ─────────────

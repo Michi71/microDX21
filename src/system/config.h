@@ -4,7 +4,7 @@
 // Reads /boot/microdx21.ini (via FatFS) at boot. The CConfig class is
 // the single source of truth for every tweakable knob the user might
 // want to change on the SD card: audio backend, sample rate, MIDI
-// channel filter, USB host/gadget selection, master volume, OLED type
+// channel filter, master volume, OLED type
 // and pin assignment, rotary encoder GPIO.
 //
 
@@ -49,21 +49,6 @@ public:
     unsigned    GetMIDIChannel() const;
 
     // ───────────────────────────────────────────────
-    // USB
-    // ───────────────────────────────────────────────
-    // Returns false on RPi 5 (no gadget mode), otherwise the
-    // user-configured value from microdx21.ini.
-    bool IsUSBGadget() const
-    {
-#if RASPPI >= 5
-        return false;
-#else
-        return m_bUSBGadget;
-#endif
-    }
-    unsigned GetUSBGadgetPin() const { return m_nUSBGadgetPin; }
-
-    // ───────────────────────────────────────────────
     // MASTER VOLUME
     // ───────────────────────────────────────────────
     unsigned    GetMasterVolume() const;     // 0..127
@@ -85,9 +70,6 @@ private:
     bool        m_bChannelsSwapped;
     bool        m_bTestToneEnabled;
 
-    // USB
-    bool        m_bUSBGadget;
-    unsigned    m_nUSBGadgetPin;
 
     // MIDI
     unsigned    m_nMIDIBaudRate;

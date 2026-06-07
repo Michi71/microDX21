@@ -75,9 +75,6 @@ private:
 #if RASPPI == 4
     CUSBHostController* m_pUSBHost;
 #endif
-#if RASPPI < 5
-    CUSBMIDIGadget* m_pUSBGadget;
-#endif
     CScheduler      m_Scheduler;
 
     // Display + input. Set in Initialize(), torn down in destructor.

@@ -91,6 +91,21 @@ out/kernel_rpi3.img: data   # gültiges Pi 3 / Zero 2 W 64-bit Image
 - **MiniDexed** (https://github.com/synthfrumi/MiniDexed): Vorbild für die Multi-Core-Audio-Architektur auf Pi 3/4.
 - **picoX21H** (https://github.com/synthfrumi/picoX21H): Vorbild für die DX21-Patch-Architektur (applyPatch-at-program-change).
 
+## USB architecture
+- The synth Pi is USB-Host-only. USB-MIDI Gadget is provided by an
+  external RP2350 "Comms" processor running pico-midi-adapter
+  firmware, which bridges USB-MIDI to UART RX/TX on GPIO 14/15.
+- This is reflected in `CKernel::Initialize()` (always-USB-Host path,
+  no Gadget conditional), `CMicroDX21::InitMidi()` (always allocates
+  the full USB-MIDI device array), and the absence of `CConfig::*USB*`
+  / `CMicroDX21::IsUSBDeviceMode()` methods.
+- The RPi-4 xHCI fallback for the USB-A port is still in place via
+  `mUSBHCI` so a DIN-MIDI adapter plugged into the USB-A port still
+  works for development.
+- Later, when the Comms Pi is wired up, the in-kernel MIDI path
+  stays the same — we just feed it from the serial-MIDI ring buffer
+  instead of from a directly-attached DIN adapter.
+
 ## UI action surface (encoder + click)
 - `CDX21Display::SelectParam(±1)` — pure UI cursor move through the per-mode list. Wraps. No synth write.
 - `CDX21Display::AdjustValue(±1)` — writes through `COPMEmuAdapter::setParameter()`:

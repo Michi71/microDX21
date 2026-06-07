@@ -62,7 +62,6 @@ fi
     -r ${RPI} \
     --prefix "${TOOLCHAIN_PREFIX}" \
     ${OPTIONS} \
-    -o USB_GADGET_VENDOR_ID=0x2E8A \
 
 # Detect OS for CPU count
 if [ "$(uname -s)" = "Darwin" ]; then

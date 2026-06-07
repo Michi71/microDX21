@@ -4,6 +4,18 @@ All notable changes to microDX21, in reverse chronological order.
 
 ## [Unreleased]
 
+### Removed
+- **USB-MIDI Gadget mode**: dropped the in-kernel `CUSBMIDIGadget` branch that let the synth Pi appear as a USB-MIDI device to a host. The synth Pi is now USB-Host-only. USB-MIDI Gadget is handled by an external RP2350 "Comms" processor (pico-midi-adapter) that bridges USB-MIDI to UART RX/TX on GPIO 14/15. See `pico-midi-adapter/README` for the wiring.
+  - `CKernel::m_pUSBGadget` member and constructor/destructor removed (`src/kernel.h`, `src/kernel.cpp`).
+  - `CMicroDX21::IsUSBDeviceMode()` and `GetUSBGadgetPin()` removed (`src/microdx21.h`, `src/microdx21.cpp`).
+  - `CConfig::IsUSBGadget()` / `GetUSBGadgetPin()` / `m_bUSBGadget` / `m_nUSBGadgetPin` removed (`src/system/config.h`, `src/system/config.cpp`).
+  - `USBGadget=`, `USBGadgetPin=` keys dropped from `config/microdx21.ini`. The `[USB]` section now just documents the new architecture.
+  - `libusbgadget.a` removed from `src/Rules.mk`.
+  - `CMicroDX21::InitMidi()` always allocates the full set of host-side USB-MIDI devices (no more "single device for gadget" branch).
+  - `RASPPI < 5` / `RASPPI == 4` conditional blocks in `CKernel::Initialize()` collapsed to one always-USB-Host path.
+  - `build.sh` no longer passes `-o USB_GADGET_VENDOR_ID=0x2E8A` to Circle's `./configure`.
+  - `README.md` roadmap item "Audio over USB Gadget" replaced with "USB-MIDI Gadget (removed)" explaining the Comms-processor architecture.
+
 ### Added
 - **Boot splash fade-in** (top-down, 4 pages over 1 s):
   - `CDX21Display::m_SplashProgress` (0..4) gates which pages of the splash banner are visible. Each step the kernel drives takes 250 ms, so the banner builds up as: page 0 (`*  YAMAHA  *`) at 0.25 s → +page 1 (7-seg `DX21`) at 0.5 s → +page 2 (`* SYNTHESIZER *`) at 0.75 s → +page 3 (`v0.1.0  INIT...`) at 1.0 s. 1 s hold at full banner, then `SetSplash(false)` to PLAY mode.

@@ -124,18 +124,11 @@ bool CMicroDX21::Initialize()
     // ───────────────────────────────────────────────
     LOGNOTE("VelvetKeys: InitMidi");
 
-    if (m_pConfig->IsUSBGadget())
-    {
-        // Gadget-Mode: nur ein USB-MIDI-Device (das Gadget selbst)
-        m_usbMidi[0] = new CMicroDX21USBMIDIDevice(this, m_pConfig, 0);
-        LOGNOTE("VelvetKeys: USB Gadget MIDI Device created");
-    }
-    else
-    {
-        // Host-Mode: bis zu 4 USB-MIDI-Devices (Plug & Play)
-        for (unsigned i = 0; i < MaxUSBMIDIDevices; i++)
-            m_usbMidi[i] = new CMicroDX21USBMIDIDevice(this, m_pConfig, i);
-    }
+    // Host mode only: up to 4 USB-MIDI devices (Plug & Play).
+    // The USB-MIDI Gadget is now handled by the external RP2350
+    // "Comms" processor (pico-midi-adapter) over UART.
+    for (unsigned i = 0; i < MaxUSBMIDIDevices; i++)
+        m_usbMidi[i] = new CMicroDX21USBMIDIDevice(this, m_pConfig, i);
 
     m_serialMidi = new CMicroDX21SerialMIDIDevice(this, m_pInterrupt, m_pConfig);
     if (!m_serialMidi->Initialize())
@@ -705,16 +698,6 @@ unsigned CMicroDX21::GetChunkSize() const
 bool CMicroDX21::IsStereoSwapped() const
 {
     return m_bChannelsSwapped;
-}
-
-bool CMicroDX21::IsUSBDeviceMode() const
-{
-    return m_pConfig && m_pConfig->IsUSBGadget();
-}
-
-unsigned CMicroDX21::GetUSBGadgetPin() const
-{
-    return m_pConfig ? m_pConfig->GetUSBGadgetPin() : 0;
 }
 
 const char* CMicroDX21::GetFirmwareVersion() const

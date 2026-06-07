@@ -22,7 +22,6 @@ LIBS += \
 	$(CIRCLEHOME)/addon/display/libdisplay.a \
 	$(CIRCLEHOME)/addon/sensor/libsensor.a \
   	$(CIRCLEHOME)/lib/usb/libusb.a \
-	$(CIRCLEHOME)/lib/usb/gadget/libusbgadget.a \
  	$(CIRCLEHOME)/lib/input/libinput.a \
 	$(CIRCLEHOME)/lib/sound/libsound.a \
  	$(CIRCLEHOME)/addon/fatfs/libfatfs.a \

@@ -49,9 +49,6 @@ CKernel::CKernel()
 #if RASPPI == 4
 , m_pUSBHost(nullptr)
 #endif
-#if RASPPI < 5
-, m_pUSBGadget(nullptr)
-#endif
 , m_Scheduler()
 , m_pDX21Display(nullptr)
 , m_pDX21Input(nullptr)
@@ -72,9 +69,6 @@ CKernel::~CKernel() {
     delete m_pDX21Display;
     delete m_pMicroDX21;
     delete m_pSPIMaster;
-#if RASPPI < 5
-    delete m_pUSBGadget;
-#endif
 #ifdef ARM_ALLOW_MULTI_CORE
     delete m_pMultiCore;
 #endif
@@ -117,59 +111,19 @@ bool CKernel::Initialize() {
     }
 
     // ───────────────────────────────────────────────
-    // USB: Host vs. Gadget Mode
-    //   RPi <= 3 : DWC2, exclusive OR
-    //   RPi 4    : DWC2 (USB-C) = Gadget, VL805/xHCI (USB-A) = Host
-    //              xHCI must init BEFORE Gadget for the USB power domain
-    //   RPi 5    : No Gadget mode
+    // USB: Host mode only. USB-MIDI Gadget (Pi as a USB device) is
+    // no longer handled in-kernel: a separate RP2350 "Comms"
+    // processor (pico-midi-adapter) bridges USB-MIDI to UART RX/TX
+    // on GPIO 14/15. The synth Pi is always USB Host on the USB-A
+    // port for DIN-MIDI adapters, and the Comms processor is the
+    // USB device on the host side.
     // ───────────────────────────────────────────────
-#if RASPPI < 5
-    if (m_Config.IsUSBGadget()) {
-        CLogger::Get()->Write("kernel", LogNotice, "USB Gadget Mode requested");
-        unsigned nGadgetPin = m_Config.GetUSBGadgetPin();
-        bool bEnterGadget = true;
-        if (nGadgetPin != 0) {
-            CGPIOPin vbusPin(nGadgetPin, GPIOModeInputPullUp);
-            bEnterGadget = (vbusPin.Read() == LOW);
-            CLogger::Get()->Write("kernel", LogNotice,
-                "VBUS detect GPIO%u: %s", nGadgetPin,
-                bEnterGadget ? "present -> Gadget" : "absent -> Host");
-        }
-        if (bEnterGadget) {
-#if RASPPI == 4
-            if (mUSBHCI.Initialize()) {
-                m_pUSBHost = &mUSBHCI;
-                CLogger::Get()->Write("kernel", LogNotice, "xHCI host up (RPi4)");
-            } else {
-                CLogger::Get()->Write("kernel", LogWarning, "xHCI init failed");
-            }
-#endif
-            m_pUSBGadget = new CUSBMIDIGadget(&mInterrupt);
-            if (m_pUSBGadget->Initialize()) {
-                m_pUSB = m_pUSBGadget;
-            } else {
-                CLogger::Get()->Write("kernel", LogWarning, "Gadget init failed");
-                delete m_pUSBGadget;
-                m_pUSBGadget = nullptr;
-            }
-        }
-    }
-    if (!m_pUSB) {
-        CLogger::Get()->Write("kernel", LogNotice, "USB Host Mode");
-        if (mUSBHCI.Initialize()) {
-            m_pUSB = &mUSBHCI;
-        } else {
-            CLogger::Get()->Write("kernel", LogError, "USB Host init failed");
-        }
-    }
-#else
-    CLogger::Get()->Write("kernel", LogNotice, "USB Host Mode (RPi5)");
+    CLogger::Get()->Write("kernel", LogNotice, "USB Host Mode");
     if (mUSBHCI.Initialize()) {
         m_pUSB = &mUSBHCI;
     } else {
         CLogger::Get()->Write("kernel", LogError, "USB Host init failed");
     }
-#endif
 
     if (!m_I2CMaster.Initialize()) {
         CLogger::Get()->Write("kernel", LogError, "I2C Master init failed");
