@@ -7,6 +7,18 @@ All notable changes to microDX21, in reverse chronological order.
 First public release. The project boots to a working Yamaha DX21 emulator on Raspberry Pi 3/4/5 (bare-metal Circle stdlib) and on macOS/PC (SDL2 + PortMidi).
 
 ### Display & input
+- **`CDX21Display::Render()`** reads live state from a `COPMEmuAdapter` set via `SetAdapter()`. 5 mode-specific helpers (`RenderPlayMode` / `RenderEditMode` / `RenderPerformanceMode` / `RenderFunctionMode` / `RenderMemoryMode`) each write to the 4 SSD1305 pages. Per-mode values:
+  - PLAY: voice number + name from the adapter, play mode (SINGLE/DUAL/SPLIT) on page 3, bank group (A1-A8..B9-B16) derived from voice / 16.
+  - EDIT: 7-seg big value comes from a static `kEditToAdapter[]` table mapping 36 EDIT-mode entries to `DX21ParamIndex` values. 14 entries have live getters; the other 22 fall back to "n/a".
+  - PERFORMANCE: voice name in 7-seg, or "BUFF" when COMPARE is toggled.
+  - FUNCTION: 9 of 46 entries have live getters; the rest show "=n/a".
+  - MEMORY: bank name in 7-seg, tape dialog label.
+- **`CDX21Display::InvalidateIfStale(maxAgeMs)`** — if the last render is older than `maxAgeMs`, force a redraw. Used by `RunCore2()` at 5 Hz so MIDI-driven state changes (Program Change, CC#0 Bank Select) become visible without explicit `Set*()` calls.
+- **`CDX21Input`** wraps the Circle sensor-addon's `CKY040` (ISR-driven, with switch debounce, single/double/triple-click, hold detection). Maps:
+  - rotate CW/CCW → next/prev parameter
+  - single click → cycle mode (PLAY → EDIT → PERFORM → FUNCTION → MEMORY → PLAY)
+  - double click → COMPARE toggle
+  - long press → memory-protect toggle
 - **`src/opm/dx21_ui_strings.h`** (214 lines) — All LCD strings extracted from the original DX21 ROM V1.5 firmware (`src/opm/firmware/dx21_rom_v1_5.asm`): 36 EDIT-mode parameter labels, 46 FUNCTION-mode menu items, 6 PLAY labels, ON/OFF, note names, tape-dialog labels, MIDI status messages. 16-char padded for direct copy into a 2×16 framebuffer.
 - **`src/opm/dx21_ui_7seg.h`** (327 lines) — 8×16 7-segment font for big value display. Hand-composed segment masks (a/b/c/d/e/f/g) for all 10 digits, 26 uppercase letters, and 21 symbols. Includes `FromAscii(char)` ASCII→glyph mapper.
 - **`src/display/display_dx21.{h,cpp}`** (148 + 395 lines) — `CDX21Display` wraps `CSSD1305SPIDisplay` from `libdisplay2` and renders 5 modes (PLAY, EDIT, PERFORMANCE, FUNCTION, MEMORY) + COMPARE overlay. Layout mirrors the original DX21's HD44780 2×16 display, scaled to 128×32.
