@@ -124,7 +124,17 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
 
     switch (ev) {
         case CKY040::EventClockwise: {
-            if (m_bBrowse) {
+            if (m_pDisplay->GetMode() == DX21UI::kModeMemory) {
+                // MEMORY-mode state machine dispatch. The encoder
+                // drives the picker of the current stage; click
+                // advances. The m_bBrowse flag is ignored here because
+                // MEMORY is a dialog, not a value editor.
+                int stage = m_pDisplay->GetMemoryStage();
+                if (stage == 0)      m_pDisplay->MemoryPickAction(+1);
+                else if (stage == 1) m_pDisplay->MemoryToggleYesNo();
+                else if (stage == 2) m_pDisplay->MemoryPickGroup(+1);
+                // stage 3 ignores rotation; the timer auto-clears.
+            } else if (m_bBrowse) {
                 m_pDisplay->SelectParam(+1);
             } else {
                 int v = m_pDisplay->AdjustValue(+1);
@@ -137,7 +147,12 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
             break;
         }
         case CKY040::EventCounterclockwise: {
-            if (m_bBrowse) {
+            if (m_pDisplay->GetMode() == DX21UI::kModeMemory) {
+                int stage = m_pDisplay->GetMemoryStage();
+                if (stage == 0)      m_pDisplay->MemoryPickAction(-1);
+                else if (stage == 1) m_pDisplay->MemoryToggleYesNo();
+                else if (stage == 2) m_pDisplay->MemoryPickGroup(-1);
+            } else if (m_bBrowse) {
                 m_pDisplay->SelectParam(-1);
             } else {
                 int v = m_pDisplay->AdjustValue(-1);
@@ -151,6 +166,12 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
         }
 
         case CKY040::EventSwitchClick: {
+            // In MEMORY mode, the click is the dialog "OK" button:
+            // advance the state machine. Otherwise, cycle the mode.
+            if (m_pDisplay->GetMode() == DX21UI::kModeMemory) {
+                m_pDisplay->MemoryConfirm();
+                break;
+            }
             // Short click: cycle to next mode. The original DX21's
             // PLAY/EDIT/FUNCTION/COMPARE buttons are mapped to a single
             // "mode" encoder in microDX21 (we have one encoder, not 5

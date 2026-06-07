@@ -161,18 +161,46 @@ constexpr const char* NOTE_NAMES[] = {
 constexpr int NOTE_NAMES_COUNT = 12;
 
 // Cartridge / tape dialogs (from dat_EB65).
+// Top-level: Save / Load / Verify actions in MEMORY mode (0..2).
+// Confirmation: YES/NO dialog (3..4).
+// Group select: "GROUP (1-16) ?" (5..20, 16 entries; the original DX21
+// shows a 2-digit group number in the big-7seg area, not a label).
+// Result feedback: ERR / Completed (21..22).
 constexpr const char* TAPE_LABELS[] = {
-    "INT     to Tape",   // 0
-    "Load            ",  // 1
-    "ERR             ",   // 2
-    "Verify          ",   // 3
-    " to INT         ",   // 4
-    "to Buff         ",   // 5
-    "Verify          ",   // 6
-    "Completed       ",   // 7
-    "Tape            ",   // 8
+    // 0..2: top-level actions (page 0 of MEMORY mode)
+    "Save to Tape  ?",   //  0  Save 32 RAM voices to SD bank
+    "Load from Tape?",   //  1  Load 32 RAM voices from SD bank
+    "Verify    Tape?",   //  2  Verify SD bank matches RAM
+    // 3..4: YES/NO confirmation
+    "       ?  NO ",     //  3  NO selected (default)
+    "       ? YES ",     //  4  YES selected
+    // 5..20: Group select 1..16 (label is "GROUP (N) ?", page 1 of MEMORY)
+    "GROUP ( 1) ?  ",    //  5
+    "GROUP ( 2) ?  ",    //  6
+    "GROUP ( 3) ?  ",    //  7
+    "GROUP ( 4) ?  ",    //  8
+    "GROUP ( 5) ?  ",    //  9
+    "GROUP ( 6) ?  ",    // 10
+    "GROUP ( 7) ?  ",    // 11
+    "GROUP ( 8) ?  ",    // 12
+    "GROUP ( 9) ?  ",    // 13
+    "GROUP (10) ?  ",    // 14
+    "GROUP (11) ?  ",    // 15
+    "GROUP (12) ?  ",    // 16
+    "GROUP (13) ?  ",    // 17
+    "GROUP (14) ?  ",    // 18
+    "GROUP (15) ?  ",    // 19
+    "GROUP (16) ?  ",    // 20
+    // 21..22: result feedback
+    "ERR             ",  // 21
+    "Completed       ",  // 22
 };
 constexpr int TAPE_LABEL_COUNT = sizeof(TAPE_LABELS) / sizeof(TAPE_LABELS[0]);
+constexpr int TAPE_GROUP_FIRST  = 5;    // first group label index
+constexpr int TAPE_GROUP_LAST   = 20;   // last group label index
+constexpr int TAPE_NUM_GROUPS   = TAPE_GROUP_LAST - TAPE_GROUP_FIRST + 1;
+constexpr int TAPE_RESULT_ERR   = 21;
+constexpr int TAPE_RESULT_OK    = 22;
 
 // MIDI status messages (from dat_E6E6 / dat_E9B7).
 constexpr const char* MIDI_STATUS[] = {

@@ -166,6 +166,12 @@ CDX21Display::CDX21Display(CSPIMaster* pSPI, const Config& cfg)
     , m_pAdapter(nullptr)
     , m_LastRenderMs(0)
     , m_bSplash(false)
+    , m_MemoryStage(0)
+    , m_MemoryAction(0)
+    , m_MemoryYesNo(0)
+    , m_MemoryGroup(0)
+    , m_MemoryResult(-1)
+    , m_MemoryResultMs(0)
 {
     memset(m_PageBuf, 0, sizeof(m_PageBuf));
 }
@@ -546,28 +552,112 @@ void CDX21Display::RenderFunctionMode() {
 void CDX21Display::RenderMemoryMode() {
     char line[32];
 
-    // Page 0: "MEMORY  N"
-    snprintf(line, sizeof(line), "%-9s %2d      ",
-             MODE_TITLE_MEMORY, m_ParamIdx);
+    // The MEMORY screen is a 3-stage state machine:
+    //   stage 0: pick action  (Save / Load / Verify)
+    //   stage 1: confirm      (YES / NO)
+    //   stage 2: pick group   (1..16)
+    //   stage 3: result-shown (OK / FAILED, 2 s)
+    //
+    // In stages 0 and 2, m_ParamIdx is the cursor (legacy
+    // SelectParam/AdjustValue path). In stage 1, m_ParamIdx is unused
+    // (we use m_MemoryYesNo for the toggle). In stage 3, no input is
+    // accepted until the next click.
+
+    // Page 0: "MEMORY  STAGE"
+    if (m_MemoryStage == 1) {
+        snprintf(line, sizeof(line), "%-9s YES/NO ", MODE_TITLE_MEMORY);
+    } else if (m_MemoryStage == 2) {
+        snprintf(line, sizeof(line), "%-9s GRP %2d ", MODE_TITLE_MEMORY, m_MemoryGroup + 1);
+    } else if (m_MemoryStage == 3) {
+        snprintf(line, sizeof(line), "%-9s DONE   ", MODE_TITLE_MEMORY);
+    } else {
+        snprintf(line, sizeof(line), "%-9s ACT %d  ", MODE_TITLE_MEMORY, m_MemoryAction);
+    }
     DrawText6x8(0, 0, line, 16);
 
-    // Page 1: bank name in big
-    const char* bankText = m_ValueStr ? m_ValueStr : "TAPE";
-    DrawBigString(0, 8, bankText);
+    // Page 1: big text — the action name / YES/NO / group number / result
+    if (m_MemoryStage == 0) {
+        // Show the action name in big 7-seg.
+        static const char* kActNames[3] = { "SAVE", "LOAD", "VRFY" };
+        DrawBigString(0, 8, kActNames[m_MemoryAction]);
+    } else if (m_MemoryStage == 1) {
+        DrawBigString(0, 8, m_MemoryYesNo ? "YES" : "NO");
+    } else if (m_MemoryStage == 2) {
+        // Show the group number in big 7-seg, e.g. "G05" / "G12".
+        char gbuf[16];
+        snprintf(gbuf, sizeof(gbuf), "G%2d", (int)(m_MemoryGroup + 1));
+        DrawBigString(0, 8, gbuf);
+    } else {
+        // stage 3: result. Look up the result string from the adapter
+        // (or fall back to a generic message).
+        const char* rs = "OK";
+        if (m_pAdapter) {
+            rs = COPMEmuAdapter::MemoryResultString(
+                (COPMEmuAdapter::MemoryResult)m_MemoryResult);
+        }
+        DrawBigString(0, 8, rs);
+    }
 
-    // Page 2: tape dialog label
-    const char* tname = (m_ParamIdx >= 0 && m_ParamIdx < TAPE_LABEL_COUNT)
-        ? TAPE_LABELS[m_ParamIdx]
-        : "                ";
-    DrawText6x8(0, 16, tname, 16);
+    // Page 2: hint line. In stage 0/2 it's the action or group label.
+    // In stage 1 it's the confirm question. In stage 3 it's blank.
+    if (m_MemoryStage == 0) {
+        // m_ParamIdx (0..2) is the action cursor; show its label.
+        const char* an = "                ";
+        if (m_ParamIdx >= 0 && m_ParamIdx < 3) {
+            static const char* kLabels[3] = {
+                "Save to Tape  ?",
+                "Load from Tape?",
+                "Verify    Tape?",
+            };
+            an = kLabels[m_ParamIdx];
+        }
+        DrawText6x8(0, 16, an, 16);
+    } else if (m_MemoryStage == 1) {
+        const char* q = (m_MemoryAction == 0) ? "Save to SD?"
+                      : (m_MemoryAction == 1) ? "Load from SD?"
+                                              : "Verify SD?";
+        DrawText6x8(0, 16, q, 16);
+    } else if (m_MemoryStage == 2) {
+        // Show "GROUP (N) ?" as the hint for the current group.
+        const char* gn = "                ";
+        int labelIdx = TAPE_GROUP_FIRST + m_MemoryGroup;
+        if (labelIdx >= 0 && labelIdx < TAPE_LABEL_COUNT) {
+            gn = TAPE_LABELS[labelIdx];
+        }
+        DrawText6x8(0, 16, gn, 16);
+    } else {
+        // stage 3: status hint (the actual result message lives on
+        // page 1 in big; the hint on page 2 is the action name).
+        const char* an = "                ";
+        if (m_MemoryAction >= 0 && m_MemoryAction < 3) {
+            static const char* kActNames[3] = { "SAVE", "LOAD", "VERIFY" };
+            an = kActNames[m_MemoryAction];
+        }
+        DrawText6x8(0, 16, an, 16);
+    }
 
-    // Page 3: status
+    // Page 3: status / hint / blank.
     if (m_Status) {
         snprintf(line, sizeof(line), "%-16.16s", m_Status);
     } else {
         line[0] = '\0';
     }
     DrawText6x8(0, 24, line, 16);
+
+    // Auto-clear the result display 2 s after the action ran, so the
+    // user doesn't see stale "OK" forever. InvalidateIfStale() runs
+    // every 5 Hz from RunCore2; we piggy-back on it.
+    if (m_MemoryStage == 3 && m_MemoryResultMs != 0) {
+        unsigned now = CTimer::Get()->GetTicks() * 1000 / 1000000;
+        if (now - m_MemoryResultMs >= 2000) {
+            // Time's up: jump back to stage 0 with a clean slate.
+            m_MemoryStage = 0;
+            m_MemoryResult = -1;
+            m_MemoryResultMs = 0;
+            ClearStatus();
+            MarkDirty();
+        }
+    }
 }
 
 void CDX21Display::InvalidateIfStale(unsigned maxAgeMs) {
@@ -694,6 +784,86 @@ int CDX21Display::AdjustValue(int delta) {
     if (m_Value > 255) m_Value = 255;
     MarkDirty();
     return m_Value;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Memory-mode state machine implementation
+// ────────────────────────────────────────────────────────────────────
+//
+// Action index → adapter call. The numeric index is enough; the
+// display uses literal action-name tables inline where the renderer
+// needs them.
+void CDX21Display::MemoryPickAction(int delta) {
+    if (m_MemoryStage != 0) return;
+    int n = 3;  // Save, Load, Verify
+    int a = m_MemoryAction + delta;
+    a %= n;
+    if (a < 0) a += n;
+    m_MemoryAction = a;
+    MarkDirty();
+}
+
+void CDX21Display::MemoryToggleYesNo() {
+    if (m_MemoryStage != 1) return;
+    m_MemoryYesNo ^= 1;
+    MarkDirty();
+}
+
+void CDX21Display::MemoryPickGroup(int delta) {
+    if (m_MemoryStage != 2) return;
+    int g = m_MemoryGroup + delta;
+    g %= 16;
+    if (g < 0) g += 16;
+    m_MemoryGroup = g;
+    MarkDirty();
+}
+
+// Click handler. The state machine is:
+//   stage 0 + click  → stage 1 (confirm), default NO
+//   stage 1 + NO + click  → stage 0
+//   stage 1 + YES + click → execute, stage 3 (result)
+//   stage 2 + click  → execute, stage 3
+//   stage 3 + click  → stage 0 (back to pick)
+void CDX21Display::MemoryConfirm() {
+    if (m_MemoryStage == 0) {
+        m_MemoryStage = 1;
+        m_MemoryYesNo = 0;  // default NO
+        MarkDirty();
+    } else if (m_MemoryStage == 1) {
+        if (m_MemoryYesNo == 0) {
+            m_MemoryStage = 0;  // back to pick
+        } else {
+            m_MemoryStage = 2;  // group select
+        }
+        MarkDirty();
+    } else if (m_MemoryStage == 2) {
+        // Execute. We invoke the adapter directly. The adapter's
+        // MemoryResult enum is mapped to a small int for m_MemoryResult.
+        if (m_pAdapter) {
+            COPMEmuAdapter::MemoryResult r;
+            switch (m_MemoryAction) {
+                case 0:  r = m_pAdapter->saveRamBankToFile(m_MemoryGroup); break;
+                case 1:  r = m_pAdapter->loadRamBankFromFile(m_MemoryGroup); break;
+                case 2:  r = m_pAdapter->verifyRamBank(m_MemoryGroup);     break;
+                default: r = COPMEmuAdapter::MemoryResult::NotImplemented; break;
+            }
+            m_MemoryResult = (int)r;
+            // Show a status string for ~2 s.
+            SetStatus(COPMEmuAdapter::MemoryResultString(r));
+        } else {
+            m_MemoryResult = (int)COPMEmuAdapter::MemoryResult::NoFS;
+            SetStatus("NO ADAPTER");
+        }
+        m_MemoryResultMs = CTimer::Get()->GetTicks() * 1000 / 1000000;
+        m_MemoryStage = 3;
+        MarkDirty();
+    } else {
+        // stage 3: back to pick
+        m_MemoryStage = 0;
+        m_MemoryResult = -1;
+        ClearStatus();
+        MarkDirty();
+    }
 }
 
 void CDX21Display::RenderSplashMode() {

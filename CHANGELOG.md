@@ -5,6 +5,16 @@ All notable changes to microDX21, in reverse chronological order.
 ## [Unreleased]
 
 ### Added
+- **Tape save/load UI** (3-stage MEMORY dialog): Save / Load / Verify the 32 RAM voices to/from SD card banks.
+  - 3-stage state machine in `CDX21Display::m_MemoryStage`:
+    - Stage 0 (pick action): rotation cycles Save / Load / Verify. Click advances to stage 1.
+    - Stage 1 (confirm): rotation toggles YES / NO. Click with NO goes back to stage 0; click with YES advances to stage 2.
+    - Stage 2 (pick group): rotation cycles 1..16. Click executes the action.
+    - Stage 3 (result): shows OK / SAVE FAILED / LOAD FAILED / NO SD CARD / VERIFY MISMATCH in big 7-seg for 2 s, then auto-clears back to stage 0.
+  - Bank layout: `SD:/MICRODX21/BANK_NN/voice_00.json` … `voice_31.json` for NN in 01..16. Uses the existing `CDX21Memory::saveRamBank/loadRamBank` interface.
+  - New `COPMEmuAdapter::MemoryResult` enum + 3 methods: `saveRamBankToFile(int group)`, `loadRamBankFromFile(int group)`, `verifyRamBank(int group)`. Static `MemoryResultString(MemoryResult)` maps to a 16-char status line.
+  - Encoder dispatch in `dx21_input.cpp` routes MEMORY-mode rotation to `MemoryPickAction/ToggleYesNo/PickGroup`, and click to `MemoryConfirm()`. The m_bBrowse flag is ignored in MEMORY mode (it's a dialog, not a value editor).
+  - `TAPE_LABELS` extended from 9 to 23 entries: 3 actions (Save / Load / Verify), 2 YES/NO confirmation, 16 group labels, 2 result feedback (ERR / Completed).
 - **Complete VCED parameter coverage**:
   - `COPMEmu::writeVcedGlobal()` extended with cases for PMS+AMS (param 12, packed) and Key Offset (param 13).
   - `COPMEmu::writeVcedOperator()` extended with cases for D2R (param 1), RR (param 3), LS (param 5), RS (param 6), EBS (param 7), AME (param 13, on 0xA0 bit 7), KVS (param 9), DET (param 12). AME is on a separate VCED param id from D1L because the two share register 0xE0 / 0xA0 in different ways.

@@ -106,6 +106,41 @@ public:
     // by the encoder for the wrap-around math.
     int  GetParamCountForMode() const;
 
+    // ───────────────────────────────────────────────
+    // Memory-mode state machine
+    // ───────────────────────────────────────────────
+    //
+    // The MEMORY screen is a 3-stage dialog:
+    //   1. Pick action  : Save / Load / Verify  (m_MemoryAction)
+    //   2. Confirm      : YES / NO             (m_MemoryYesNo)
+    //   3. Pick group   : 1..16                 (m_MemoryGroup 0..15)
+    // After YES, MemoryExecute() runs the chosen action against
+    // m_MemoryGroup and stores a 1-shot status string.
+    //
+    // The encoder and click in MEMORY mode dispatch to these methods.
+    // Rotation in stage 1 cycles the action. In stage 2 it toggles
+    // YES/NO. In stage 3 it picks the group. Click in stage 1
+    // advances to stage 2; click in stage 2 with YES runs the
+    // action and shows a 2 s "OK / FAILED" status; click in stage 2
+    // with NO or click in stage 3 with the same group jumps back
+    // to stage 1.
+    void MemoryPickAction(int delta);     // stage 1: rotate Save/Load/Verify
+    void MemoryToggleYesNo();            // stage 2: YES <-> NO
+    void MemoryPickGroup(int delta);      // stage 3: rotate group 0..15
+    void MemoryConfirm();                // click handler: advance or run
+
+    // Result of the most recent MemoryExecute() — shown for ~2 s in
+    // the status line. -1 means no recent result. Cleared by
+    // SetStatus(nullptr) or by another MemoryConfirm.
+    void ClearMemoryResult()            { m_MemoryResult = -1; m_MemoryResultMs = 0; MarkDirty(); }
+    int  GetMemoryResult() const        { return m_MemoryResult; }
+
+    // Stage inspection (read-only). 0=pick, 1=confirm, 2=group, 3=result-shown.
+    int  GetMemoryStage() const         { return m_MemoryStage; }
+    int  GetMemoryAction() const        { return m_MemoryAction; }
+    int  GetMemoryYesNo() const         { return m_MemoryYesNo; }
+    int  GetMemoryGroup() const         { return m_MemoryGroup; }
+
     void SetValue(int v)                    { m_Value = v; MarkDirty(); }
     int  GetValue() const                   { return m_Value; }
 
@@ -213,6 +248,16 @@ private:
     // boot logo. SetSplash(true) at the end of CDX21Display::Initialize
     // for 2 seconds, then SetSplash(false) + SetMode(kModePlay).
     bool         m_bSplash;
+
+    // Memory-mode state machine. Initial values match the legacy
+    // "rotation = next param" behaviour: stage=0 (pick), action=0
+    // (save), YesNo=0 (NO), group=0 (1).
+    int          m_MemoryStage;     // 0=pick 1=confirm 2=group 3=result
+    int          m_MemoryAction;    // 0=save 1=load 2=verify
+    int          m_MemoryYesNo;     // 0=NO 1=YES
+    int          m_MemoryGroup;     // 0..15 (display 1..16)
+    int          m_MemoryResult;    // -1=none, else 0=OK or error code
+    unsigned     m_MemoryResultMs;  // wall-time when result was set
 
     u8           m_PageBuf[128];
 };
