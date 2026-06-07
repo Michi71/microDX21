@@ -5,6 +5,11 @@ All notable changes to microDX21, in reverse chronological order.
 ## [Unreleased]
 
 ### Added
+- **Boot splash fade-in** (top-down, 4 pages over 1 s):
+  - `CDX21Display::m_SplashProgress` (0..4) gates which pages of the splash banner are visible. Each step the kernel drives takes 250 ms, so the banner builds up as: page 0 (`*  YAMAHA  *`) at 0.25 s → +page 1 (7-seg `DX21`) at 0.5 s → +page 2 (`* SYNTHESIZER *`) at 0.75 s → +page 3 (`v0.1.0  INIT...`) at 1.0 s. 1 s hold at full banner, then `SetSplash(false)` to PLAY mode.
+  - `CDX21Display::SetSplash(bool)` is now a real method (was inline) and resets `m_SplashProgress` on every entry, so a re-entry (e.g. after a panic) starts from the top instead of flashing the full banner.
+  - `CDX21Display::SetSplashProgress(int n)` and `GetSplashProgress()` for external control. MarkDirty()s on change so the next 5 Hz refresh tick re-renders.
+  - 128×32 OLED with 4 pages of 8 px → 4 unlock steps feels natural (one per page). Matches the original DX21's row-by-row LCD initialisation by the 6803 firmware.
 - **Tape save/load UI** (3-stage MEMORY dialog): Save / Load / Verify the 32 RAM voices to/from SD card banks.
   - 3-stage state machine in `CDX21Display::m_MemoryStage`:
     - Stage 0 (pick action): rotation cycles Save / Load / Verify. Click advances to stage 1.

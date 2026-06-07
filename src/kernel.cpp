@@ -249,16 +249,42 @@ bool CKernel::Initialize() {
             m_pDX21Display->SetAdapter(m_pMicroDX21->GetOPMEmuAdapter());
 
             // ───────────────────────────────────────────────
-            // Power-on splash: show the YAMAHA / DX21 / SYNTHESIZER
-            // banner for 2 s, then switch to PLAY mode. Render()
-            // ignores m_Mode while m_bSplash is true, so the splash
-            // is shown no matter what m_Mode is currently set to.
+            // Power-on splash: top-down fade-in of the
+            // YAMAHA / DX21 / SYNTHESIZER banner, then switch to
+            // PLAY mode.
+            //
+            // The 4 pages of the 128x32 OLED unlock one per 250 ms
+            // (4 × 250 ms = 1 s fade-in), then a 1 s hold with the
+            // full banner visible, then SetSplash(false) hands off
+            // to the normal mode dispatch. Render() ignores m_Mode
+            // while m_bSplash is true, so the splash is shown no
+            // matter what m_Mode is currently set to.
+            //
+            // SetSplash(true) initialises progress at 1 (page 0
+            // visible). The driver loop then steps 1→2→3→4 and
+            // finally SetSplash(false) resets progress for the next
+            // splash entry (e.g. after a panic).
+            //
             // CTimer::SimpleMsDelay is fine here: nothing else runs
             // until Initialize() returns and the main loop starts.
             // ───────────────────────────────────────────────
             m_pDX21Display->SetSplash(true);
+            m_pDX21Display->SetSplashProgress(1);
             m_pDX21Display->Render();
-            CTimer::SimpleMsDelay(2000);
+            CTimer::SimpleMsDelay(250);
+
+            m_pDX21Display->SetSplashProgress(2);
+            m_pDX21Display->Render();
+            CTimer::SimpleMsDelay(250);
+
+            m_pDX21Display->SetSplashProgress(3);
+            m_pDX21Display->Render();
+            CTimer::SimpleMsDelay(250);
+
+            m_pDX21Display->SetSplashProgress(4);
+            m_pDX21Display->Render();
+            CTimer::SimpleMsDelay(1000);
+
             m_pDX21Display->SetSplash(false);
             m_pDX21Display->SetMode(DX21UI::kModePlay);
             m_pDX21Display->SetParamIndex(0);

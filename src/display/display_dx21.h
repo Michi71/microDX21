@@ -161,8 +161,31 @@ public:
     // kernel switches to the normal mode dispatch. Render() honors
     // m_bSplash *before* the m_Mode switch, so any pending mode
     // change becomes visible the moment splash ends.
-    void SetSplash(bool on)                 { m_bSplash = on; MarkDirty(); }
+    void SetSplash(bool on);                // also resets m_SplashProgress
     bool GetSplash() const                  { return m_bSplash; }
+
+    // ───────────────────────────────────────────────
+    // Splash fade-in progress
+    // ───────────────────────────────────────────────
+    //
+    // The 4-page splash banner doesn't pop in all at once — it fills
+    // in from the top. m_SplashProgress is 0..4 (inclusive):
+    //   0 = nothing visible (all pages blank)
+    //   1 = page 0 only ("*  YAMAHA  *")
+    //   2 = pages 0..1 (adds the 7-seg "DX21" mark)
+    //   3 = pages 0..2 (adds "* SYNTHESIZER *")
+    //   4 = pages 0..3 (full banner, "v0.1.0  INIT..." appears)
+    //
+    // SetSplashProgress() is idempotent and MarkDirty()s on change,
+    // so Render() will redraw at the next 5 Hz tick. kernel.cpp drives
+    // the progress: 4 steps × 250 ms = 1 s fade-in, then a 1 s hold
+    // at progress=4, then SetSplash(false) to hand off to PLAY mode.
+    void SetSplashProgress(int n)          { if (n < 0) n = 0; if (n > 4) n = 4;
+                                              if (n != m_SplashProgress) {
+                                                  m_SplashProgress = n;
+                                                  MarkDirty();
+                                              } }
+    int  GetSplashProgress() const         { return m_SplashProgress; }
 
     void SetCompare(bool on)                { m_bCompare = on; MarkDirty(); }
     bool GetCompare() const                 { return m_bCompare; }
@@ -248,6 +271,11 @@ private:
     // boot logo. SetSplash(true) at the end of CDX21Display::Initialize
     // for 2 seconds, then SetSplash(false) + SetMode(kModePlay).
     bool         m_bSplash;
+
+    // Splash fade-in: 0..4. See SetSplashProgress(). Reset to 0 by
+    // SetSplash(false) so a re-entry into splash (e.g. after a panic)
+    // starts from the top.
+    int          m_SplashProgress;
 
     // Memory-mode state machine. Initial values match the legacy
     // "rotation = next param" behaviour: stage=0 (pick), action=0

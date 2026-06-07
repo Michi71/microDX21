@@ -166,6 +166,7 @@ CDX21Display::CDX21Display(CSPIMaster* pSPI, const Config& cfg)
     , m_pAdapter(nullptr)
     , m_LastRenderMs(0)
     , m_bSplash(false)
+    , m_SplashProgress(0)
     , m_MemoryStage(0)
     , m_MemoryAction(0)
     , m_MemoryYesNo(0)
@@ -178,6 +179,16 @@ CDX21Display::CDX21Display(CSPIMaster* pSPI, const Config& cfg)
 
 CDX21Display::~CDX21Display() {
     delete m_pDisplay;
+}
+
+void CDX21Display::SetSplash(bool on) {
+    m_bSplash = on;
+    // Reset the fade-in progress whenever splash is toggled, so a
+    // re-entry (panic / restart) starts from the top instead of
+    // immediately flashing the full banner.
+    m_SplashProgress = on ? 1 : 0;  // when on, start at 1 (page 0 only)
+                                    // so the caller can drive the rest
+    MarkDirty();
 }
 
 void CDX21Display::SetAdapter(COPMEmuAdapter* pAdapter) {
@@ -867,17 +878,24 @@ void CDX21Display::MemoryConfirm() {
 }
 
 void CDX21Display::RenderSplashMode() {
-    // Power-on splash. Original DX21 boot banner on the 2x16 character
-    // LCD was:
-    //   row 0: "*  YAMAHA DX21 *"
-    //   row 1: "*  SYNTHESIZER *"
-    // The 128x32 OLED has 4 pages of 8 px, so we put the wordmark
-    // on page 0, the 7-seg "DX21" mark in big on page 1, the
-    // sub-wordmark on page 2, and the version + init hint on page 3.
-    DrawText6x8(0, 0,  "*  YAMAHA  *",   16);
-    DrawBigString  (0, 8,  "DX21");
-    DrawText6x8(0, 16, "* SYNTHESIZER *", 16);
-    DrawText6x8(0, 24, "v0.1.0  INIT...", 16);
+    // Power-on splash with a top-down fade-in. The original DX21's
+    // 2x16 character LCD was actually initialised row-by-row by the
+    // 6803 firmware, so a per-page reveal matches the real boot
+    // sequence better than a hard 2 s "everything on".
+    //
+    // m_SplashProgress is 0..4 (4 = full banner). Render() also
+    // calls m_pDisplay->Clear() before us, so a page that hasn't
+    // been "unlocked" yet is just blank.
+    //
+    // The 4 lines on the 128x32 OLED:
+    //   page 0 (rows  0..7 ) : "*  YAMAHA  *"
+    //   page 1 (rows  8..15) : 7-seg "DX21"
+    //   page 2 (rows 16..23) : "* SYNTHESIZER *"
+    //   page 3 (rows 24..31) : "v0.1.0  INIT..."
+    if (m_SplashProgress >= 1) DrawText6x8(0, 0,  "*  YAMAHA  *",   16);
+    if (m_SplashProgress >= 2) DrawBigString  (0, 8,  "DX21");
+    if (m_SplashProgress >= 3) DrawText6x8(0, 16, "* SYNTHESIZER *", 16);
+    if (m_SplashProgress >= 4) DrawText6x8(0, 24, "v0.1.0  INIT...", 16);
 }
 
 void CDX21Display::Render() {
