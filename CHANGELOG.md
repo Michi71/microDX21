@@ -2,6 +2,19 @@
 
 All notable changes to microDX21, in reverse chronological order.
 
+## [Unreleased]
+
+### Added
+- **Power-on splash**: `CDX21Display::SetSplash(true)` + 2-second delay in `kernel.cpp::Initialize()`. While splash is active, `Render()` ignores `m_Mode` and shows the boot banner:
+  - Page 0: `*  YAMAHA  *` (6×8 text)
+  - Page 1: `DX21` (big 7-segment, 32 px tall, fills the row)
+  - Page 2: `* SYNTHESIZER *` (6×8 text)
+  - Page 3: `v0.1.0  INIT...` (version + init hint)
+  Mirrors the original DX21's 2×16 character LCD boot banner on the 128×32 OLED's 4 pages. The 7-seg `DX21` mark uses the new big-string font in `dx21_ui_7seg.h`.
+
+### Changed
+- `CDX21Display::Render()` dispatch: if `m_bSplash` is true, render the splash instead of the per-mode page. The new member is declared after `m_LastRenderMs` in the header to match the constructor's init-list order (-Wreorder).
+
 ## [0.1.0] — 2026-06-06 — Initial release
 
 First public release. The project boots to a working Yamaha DX21 emulator on Raspberry Pi 3/4/5 (bare-metal Circle stdlib) and on macOS/PC (SDL2 + PortMidi).

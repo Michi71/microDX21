@@ -367,7 +367,7 @@ LGPL compliance: when distributing binaries, either link Nuked OPM dynamically o
 - [x] Multi-core deployment (Pi 3/4/5)
 - [x] New minimal UI (128×32 SSD1305/SH1106 + KY-040)
 - [x] **Plug in the synth engine to the UI** — `CDX21Display::Render()` now reads live values from `COPMEmuAdapter` via `SetAdapter()`. PLAY/EDIT/PERFORMANCE/FUNCTION show voice name, play mode, and 7-seg parameter values; MEMORY shows bank name and tape label. 5 Hz refresh tick (`InvalidateIfStale(200)`) keeps MIDI-driven state changes visible.
-- [ ] **Power on splash** — show `*  YAMAHA DX21  *` for 2 s at boot.
+- [x] **Power-on splash** — `CDX21Display::SetSplash(true)` + 2 s `CTimer::SimpleMsDelay` in `kernel.cpp::Initialize()`. Mirrors the original DX21 boot banner (`* YAMAHA DX21 *` / `* SYNTHESIZER *`) on the 128x32 OLED, with a big 7-seg "DX21" mark on page 1.
 - [ ] **Boot logo** — pre-render a static splash and `SwapFrameBuffers` before handing off to `Run()`.
 - [ ] **Tape save/load UI** — the strings are extracted; we need the corresponding button sequence to trigger them.
 - [ ] **Audio over USB Gadget** (Pi 3 only, requires DWC2) — already in code, untested.

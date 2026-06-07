@@ -165,6 +165,7 @@ CDX21Display::CDX21Display(CSPIMaster* pSPI, const Config& cfg)
     , m_bDirty(true)
     , m_pAdapter(nullptr)
     , m_LastRenderMs(0)
+    , m_bSplash(false)
 {
     memset(m_PageBuf, 0, sizeof(m_PageBuf));
 }
@@ -578,6 +579,20 @@ void CDX21Display::InvalidateIfStale(unsigned maxAgeMs) {
     }
 }
 
+void CDX21Display::RenderSplashMode() {
+    // Power-on splash. Original DX21 boot banner on the 2x16 character
+    // LCD was:
+    //   row 0: "*  YAMAHA DX21 *"
+    //   row 1: "*  SYNTHESIZER *"
+    // The 128x32 OLED has 4 pages of 8 px, so we put the wordmark
+    // on page 0, the 7-seg "DX21" mark in big on page 1, the
+    // sub-wordmark on page 2, and the version + init hint on page 3.
+    DrawText6x8(0, 0,  "*  YAMAHA  *",   16);
+    DrawBigString  (0, 8,  "DX21");
+    DrawText6x8(0, 16, "* SYNTHESIZER *", 16);
+    DrawText6x8(0, 24, "v0.1.0  INIT...", 16);
+}
+
 void CDX21Display::Render() {
     if (!m_pDisplay) return;
     if (!m_bDirty) return;
@@ -589,7 +604,10 @@ void CDX21Display::Render() {
     // Page 1 (rows 8-15) : 7-seg big value
     // Page 2 (rows 16-23): parameter name
     // Page 3 (rows 24-31): status line
-    switch (m_Mode) {
+    if (m_bSplash) {
+        RenderSplashMode();
+    } else {
+        switch (m_Mode) {
         case kModePlay:        RenderPlayMode();        break;
         case kModeEdit:        RenderEditMode();        break;
         case kModePerformance: RenderPerformanceMode(); break;
@@ -603,6 +621,7 @@ void CDX21Display::Render() {
             DrawText6x8(0, 16, "                ", 16);
             DrawText6x8(0, 24, "                ", 16);
             break;
+        }
         }
     }
 

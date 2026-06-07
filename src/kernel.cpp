@@ -247,6 +247,23 @@ bool CKernel::Initialize() {
             // parameter values (voice name, play mode, EDIT-mode
             // 0..255 byte values, etc.) directly from the synth.
             m_pDX21Display->SetAdapter(m_pMicroDX21->GetOPMEmuAdapter());
+
+            // ───────────────────────────────────────────────
+            // Power-on splash: show the YAMAHA / DX21 / SYNTHESIZER
+            // banner for 2 s, then switch to PLAY mode. Render()
+            // ignores m_Mode while m_bSplash is true, so the splash
+            // is shown no matter what m_Mode is currently set to.
+            // CTimer::SimpleMsDelay is fine here: nothing else runs
+            // until Initialize() returns and the main loop starts.
+            // ───────────────────────────────────────────────
+            m_pDX21Display->SetSplash(true);
+            m_pDX21Display->Render();
+            CTimer::SimpleMsDelay(2000);
+            m_pDX21Display->SetSplash(false);
+            m_pDX21Display->SetMode(DX21UI::kModePlay);
+            m_pDX21Display->SetParamIndex(0);
+            m_pDX21Display->SetValue(50);
+            m_pDX21Display->SetStatus("microDX21 ready");
             m_pDX21Display->Render();
         } else {
             CLogger::Get()->Write("kernel", LogWarning, "Display init failed");

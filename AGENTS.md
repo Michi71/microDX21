@@ -18,6 +18,7 @@ Ich arbeite an einem Emulator eines Yamaha DX21 Synthesizers. Beachte strikt die
    - KEIN `new`/`delete` nach `Initialize()`.
    - Display-Thread (`CDX21Display::Render()`) ist von Audio physikalisch getrennt (anderer Core), darf aber auch nicht blockieren.
    - Multi-Core-Setup via `ARM_ALLOW_MULTI_CORE` auf Pi 3/4/5: Core 1 macht Audio, Core 2 macht Display+Encoder, Core 3 macht Deferred Work (SysEx, Preset-Load).
+   - **Boot-Splash** (`SetSplash(true)` + `CTimer::SimpleMsDelay(2000)` in `CKernel::Initialize()`) ist die einzige Stelle, an der im Init-Flow direkt gewartet wird. Akzeptabel weil zu dem Zeitpunkt kein Audio-Thread laeuft; ein Splash im `RunCore2()` waere NICHT akzeptabel.
 3. **Multi-Platform**: Code läuft auf Pi bare-metal UND macOS standalone. Pi-Pfade via `#ifdef ARM_ALLOW_MULTI_CORE` / `#if RASPPI >= 4` etc. absichern.
 
 ## Code-Konventionen

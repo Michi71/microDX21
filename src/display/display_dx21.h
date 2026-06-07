@@ -91,6 +91,14 @@ public:
     void SetStatus(const char* s)           { m_Status = s; MarkDirty(); }
     void ClearStatus()                      { m_Status = nullptr; MarkDirty(); }
 
+    // Boot-time splash overlay. When set, Render() ignores m_Mode
+    // and shows the boot logo. Cleared by SetSplash(false) when the
+    // kernel switches to the normal mode dispatch. Render() honors
+    // m_bSplash *before* the m_Mode switch, so any pending mode
+    // change becomes visible the moment splash ends.
+    void SetSplash(bool on)                 { m_bSplash = on; MarkDirty(); }
+    bool GetSplash() const                  { return m_bSplash; }
+
     void SetCompare(bool on)                { m_bCompare = on; MarkDirty(); }
     bool GetCompare() const                 { return m_bCompare; }
 
@@ -143,6 +151,7 @@ private:
     void RenderPerformanceMode();
     void RenderFunctionMode();
     void RenderMemoryMode();
+    void RenderSplashMode();
 
     CSPIMaster*        m_pSPI;
     Config             m_Config;
@@ -169,6 +178,11 @@ private:
     // to be visible without explicit Set*() calls, RunCore2() calls
     // InvalidateIfStale(200) every 200ms.
     unsigned    m_LastRenderMs;
+
+    // m_bSplash: while true, Render() ignores m_Mode and shows the
+    // boot logo. SetSplash(true) at the end of CDX21Display::Initialize
+    // for 2 seconds, then SetSplash(false) + SetMode(kModePlay).
+    bool         m_bSplash;
 
     u8           m_PageBuf[128];
 };
