@@ -366,7 +366,7 @@ LGPL compliance: when distributing binaries, either link Nuked OPM dynamically o
 - [x] 32 performance memories (JSON)
 - [x] Multi-core deployment (Pi 3/4/5)
 - [x] New minimal UI (128×32 SSD1305/SH1106 + KY-040)
-- [ ] **Plug in the synth engine to the UI** — `CDX21Display::Render()` currently shows placeholder values; the next step is reading real parameter values from `COPMEmuAdapter` and rendering them per mode.
+- [x] **Plug in the synth engine to the UI** — `CDX21Display::Render()` now reads live values from `COPMEmuAdapter` via `SetAdapter()`. PLAY/EDIT/PERFORMANCE/FUNCTION show voice name, play mode, and 7-seg parameter values; MEMORY shows bank name and tape label. 5 Hz refresh tick (`InvalidateIfStale(200)`) keeps MIDI-driven state changes visible.
 - [ ] **Power on splash** — show `*  YAMAHA DX21  *` for 2 s at boot.
 - [ ] **Boot logo** — pre-render a static splash and `SwapFrameBuffers` before handing off to `Run()`.
 - [ ] **Tape save/load UI** — the strings are extracted; we need the corresponding button sequence to trigger them.
