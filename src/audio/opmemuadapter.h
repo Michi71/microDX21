@@ -40,29 +40,34 @@ struct PresetInfo {
 // parameter editor screen and MIDI CC routing.
 // ──────────────────────────────────────────────────────────────────
 enum DX21ParamIndex {
-    // Global (0-7)
-    kParamMasterGain = 0,    // 0..1 → master gain 0..8
+    // Instrument select (0): 0..1 → program 0..N-1.
+    // Distinct from the per-mode param indices so callers can use it
+    // directly without going through kParamXxx → COPMEmu::setCurrentProgram().
+    kParamInstrument = 0,    // 0..1 → program 0..N-1 (normalised)
+
+    // Global (1-8) — shifted by +1 from the pre-instrument version.
+    kParamMasterGain,        // 0..1 → master gain 0..8
     kParamEnsemble,          // 0/1 → chorus on/off
-    kParamPlayMode,          // 0..1 → Single/Dual, 0..1 → Single/Dual/Split (3 steps)
-    kParamSplitPoint,         // 0..1 → MIDI note 0..127
-    kParamBalance,            // 0..1 → balance 0..99
-    kParamPitchBendRange,     // 0..1 → 0..12 semitones
+    kParamPlayMode,          // 0..1 → Single/Dual/Split (3 steps)
+    kParamSplitPoint,        // 0..1 → MIDI note 0..127
+    kParamBalance,           // 0..1 → balance 0..99
+    kParamPitchBendRange,    // 0..1 → 0..12 semitones
     kParamPortamentoMode,    // 0..1 → Off/FullTime/Fingered (3 steps)
     kParamPortamentoRate,    // 0..1 → 0..99
 
-    // LFO (8-11)
+    // LFO (9-12) — shifted by +1.
     kParamLFOSpeed,          // 0..1 → LFO speed 0..255
-    kParamLFODelay,           // 0..1 → LFO delay 0..127
-    kParamPMD,                // 0..1 → Pitch Mod Depth 0..127
-    kParamAMD,                // 0..1 → Amp Mod Depth 0..127
+    kParamLFODelay,          // 0..1 → LFO delay 0..127
+    kParamPMD,               // 0..1 → Pitch Mod Depth 0..127
+    kParamAMD,               // 0..1 → Amp Mod Depth 0..127
 
-    // Voice common (12-15)
-    kParamAlgorithm,          // 0..1 → algorithm 0..7 (8 steps)
-    kParamFeedback,            // 0..1 → feedback 0..7
-    kParamLFOSync,            // 0/1 → LFO key sync
-    kParamLFOWave,            // 0..1 → LFO waveform 0..3 (4 steps)
+    // Voice common (13-16) — shifted by +1.
+    kParamAlgorithm,         // 0..1 → algorithm 0..7 (8 steps)
+    kParamFeedback,          // 0..1 → feedback 0..7
+    kParamLFOSync,           // 0/1 → LFO key sync
+    kParamLFOWave,           // 0..1 → LFO waveform 0..3 (4 steps)
 
-    // Per-operator parameters (4 ops × 5 core params = 20)
+    // Per-operator parameters (4 ops × 5 core params = 20) — shifted by +1.
     // Operator 1 (OP4 in DX21 terminology = carrier 1)
     kParamOp0AR,
     kParamOp0D1R,
@@ -188,6 +193,14 @@ public:
 
         switch (index)
         {
+            case kParamInstrument: {
+                int n = m_synth->getNumPrograms();
+                if (n <= 0) return;
+                int prog = (int)(value * (n - 1) + 0.5f);
+                m_synth->setCurrentProgram(prog);
+                m_currentProgram = prog;
+                break;
+            }
             case kParamMasterGain:
                 m_synth->setMasterGain(value * 8.0f);
                 break;
@@ -277,6 +290,11 @@ public:
         if (!m_synth) return 0.0f;
         switch (index)
         {
+            case kParamInstrument: {
+                int n = m_synth->getNumPrograms();
+                if (n <= 0) return 0.0f;
+                return (float)m_synth->getCurrentProgram() / (float)(n - 1);
+            }
             case kParamMasterGain:     return m_synth->getMasterGain() / 8.0f;
             case kParamEnsemble:       return m_synth->getEnsembleOn() ? 1.0f : 0.0f;
             case kParamPlayMode:       return (float)m_synth->getPlayMode() / 2.0f;
@@ -341,20 +359,22 @@ public:
     const char* getParameterName(int index)
     {
         static const char* kNames[kParamTotalCount] = {
-            // Global (0-7)
+            // Instrument (0)
+            "Instrument",
+            // Global (1-8)
             "Master Gain", "Ensemble", "Play Mode", "Split Point",
             "Balance", "PB Range", "Porta Mode", "Porta Rate",
-            // LFO (8-11)
+            // LFO (9-12)
             "LFO Speed", "LFO Delay", "PMD", "AMD",
-            // Voice (12-15)
+            // Voice (13-16)
             "Algorithm", "Feedback", "LFO Sync", "LFO Wave",
-            // OP0 (16-20)
+            // OP0 (17-21)
             "OP1 AR", "OP1 D1R", "OP1 D1L", "OP1 Out", "OP1 CRS",
-            // OP1 (21-25)
+            // OP1 (22-26)
             "OP2 AR", "OP2 D1R", "OP2 D1L", "OP2 Out", "OP2 CRS",
-            // OP2 (26-30)
+            // OP2 (27-31)
             "OP3 AR", "OP3 D1R", "OP3 D1L", "OP3 Out", "OP3 CRS",
-            // OP3 (31-35)
+            // OP3 (32-36)
             "OP4 AR", "OP4 D1R", "OP4 D1L", "OP4 Out", "OP4 CRS",
         };
         if (index < 0 || index >= kParamTotalCount) return "?";

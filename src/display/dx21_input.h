@@ -64,6 +64,12 @@ private:
     unsigned        m_LastClickTicks;
     bool            m_bWaitingDouble;
 
+    // Browse-vs-edit flag for EDIT/FUNCTION modes. true = rotation
+    // navigates the param list (default after mode-cycle); false =
+    // rotation edits the value of the current param. Toggled by the
+    // first tick of EventSwitchHold.
+    bool            m_bBrowse;
+
     static CDX21Input* s_pInstance;
 };
 

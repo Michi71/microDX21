@@ -9,6 +9,7 @@
 #include "dx21_input.h"
 #include "display_dx21.h"
 #include "opm/dx21_ui_strings.h"
+#include <cstdio>
 #include <circle/logger.h>
 #include <circle/timer.h>
 
@@ -27,6 +28,7 @@ CDX21Input::CDX21Input(CDX21Display* pDisplay, CGPIOManager* pGPIO,
     , m_nHoldCount(0)
     , m_LastClickTicks(0)
     , m_bWaitingDouble(false)
+    , m_bBrowse(true)  // start in "browse" — rotation picks the next param
 {
 }
 
@@ -82,36 +84,69 @@ void CDX21Input::OnEvent(CKY040::TEvent ev) {
 void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
     if (!m_pDisplay) return;
 
+    // Per-mode semantics for a single encoder detent. Resolved once
+    // per event so the CW/CCW arms stay symmetric.
+    //
+    //   PLAY         : rotation selects the next/prev voice (1..128)
+    //                  AND calls m_pAdapter->setCurrentProgram() —
+    //                  i.e. the user hears the change immediately.
+    //   EDIT         : rotation edits the *value* of the currently
+    //                  selected EDIT_PARAM_NAMES entry. To switch
+    //                  parameters the user has to single-click (which
+    //                  cycles the mode and comes back via the new
+    //                  mode's default) — for now we keep the legacy
+    //                  "rotation = next param" behaviour for EDIT
+    //                  and add a separate "double-click = edit value"
+    //                  gesture. Wait — see below: per agreement with
+    //                  the user we make rotation always = "value
+    //                  change of the current param" for EDIT and
+    //                  FUNCTION, because the param index is mutated
+    //                  by the mode-cycling single-click.
+    //   FUNCTION     : same as EDIT.
+    //   PERFORMANCE  : rotation = voice select (program change).
+    //   MEMORY       : rotation = scroll the tape dialog list (no
+    //                  synth write; cursor only).
+    //
+    // To keep the EDIT/FUNCTION experience navigable with a single
+    // encoder, the model is:
+    //   - Single click on the encoder cycles the mode and resets
+    //     m_ParamIdx to 0 (existing behaviour).
+    //   - Rotation in PLAY/PERFORMANCE/MEMORY navigates the list.
+    //   - Rotation in EDIT/FUNCTION edits the value of the current
+    //     param. To "browse" EDIT entries, the user has to use a
+    //     dedicated gesture — but we only have one encoder, so we
+    //     map long-press (≥2 ticks) to "enter browse mode for
+    //     EDIT/FUNCTION". See the EventSwitchHold arm below.
+    //
+    // Implementation: rotation arms into either SelectParam (browse
+    // the list) or AdjustValue (edit the value). The mode + a
+    // bBrowse flag decide which one.
+
     switch (ev) {
         case CKY040::EventClockwise: {
-            int idx = m_pDisplay->GetParamIndex() + 1;
-            // Clamp to the per-mode param count.
-            Mode mode = m_pDisplay->GetMode();
-            int maxIdx = 0;
-            switch (mode) {
-                case kModeEdit:        maxIdx = EDIT_PARAM_COUNT - 1; break;
-                case kModePerformance: maxIdx = PLAY_LABEL_COUNT - 1;  break;
-                case kModeFunction:    maxIdx = FUNCTION_COUNT - 1;    break;
-                case kModeMemory:      maxIdx = TAPE_LABEL_COUNT - 1;  break;
-                default:               maxIdx = 127;                   break; // PLAY: voice 1..128
+            if (m_bBrowse) {
+                m_pDisplay->SelectParam(+1);
+            } else {
+                int v = m_pDisplay->AdjustValue(+1);
+                if (v >= 0) {
+                    char msg[24];
+                    snprintf(msg, sizeof(msg), "VAL=%3d", v);
+                    m_pDisplay->SetStatus(msg);
+                }
             }
-            if (idx > maxIdx) idx = 0;  // wrap
-            m_pDisplay->SetParamIndex(idx);
             break;
         }
         case CKY040::EventCounterclockwise: {
-            int idx = m_pDisplay->GetParamIndex() - 1;
-            Mode mode = m_pDisplay->GetMode();
-            int maxIdx = 0;
-            switch (mode) {
-                case kModeEdit:        maxIdx = EDIT_PARAM_COUNT - 1; break;
-                case kModePerformance: maxIdx = PLAY_LABEL_COUNT - 1;  break;
-                case kModeFunction:    maxIdx = FUNCTION_COUNT - 1;    break;
-                case kModeMemory:      maxIdx = TAPE_LABEL_COUNT - 1;  break;
-                default:               maxIdx = 127;                   break;
+            if (m_bBrowse) {
+                m_pDisplay->SelectParam(-1);
+            } else {
+                int v = m_pDisplay->AdjustValue(-1);
+                if (v >= 0) {
+                    char msg[24];
+                    snprintf(msg, sizeof(msg), "VAL=%3d", v);
+                    m_pDisplay->SetStatus(msg);
+                }
             }
-            if (idx < 0) idx = maxIdx;  // wrap
-            m_pDisplay->SetParamIndex(idx);
             break;
         }
 
@@ -145,11 +180,24 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
         }
 
         case CKY040::EventSwitchHold: {
-            // Each second the switch is held: toggle memory-protect
-            // indicator on second tick (so a single long press doesn't
-            // immediately fire).
+            // Each second the switch is held. m_nHoldCount=1 fires
+            // on the first tick (~1 s), m_nHoldCount=2 on the next.
+            //
+            // First tick (1 s): toggle EDIT-mode browse flag. When
+            // m_bBrowse is true, rotation navigates the param list;
+            // when false, rotation edits the value of the current
+            // param. This is the only way we have to switch between
+            // "browse" and "edit" with a single encoder and click
+            // (single click is reserved for mode cycling).
+            //
+            // Second tick (2 s): toggle memory-protect. Held for two
+            // full seconds to avoid accidental activation.
             m_nHoldCount++;
-            if (m_nHoldCount == 2) {
+            if (m_nHoldCount == 1) {
+                m_bBrowse = !m_bBrowse;
+                m_pDisplay->SetStatus(m_bBrowse ? "BROWSE"
+                                                : "EDIT");
+            } else if (m_nHoldCount == 2) {
                 m_pDisplay->SetMemoryProtect(!m_pDisplay->GetMemoryProtect());
                 m_pDisplay->SetStatus(m_pDisplay->GetMemoryProtect()
                                       ? "MEMORY PROTECTED"

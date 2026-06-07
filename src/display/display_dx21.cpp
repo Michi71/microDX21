@@ -39,26 +39,26 @@ static const char FromDisplay[] = "dx21disp";
 // Map: EDIT_PARAM_NAMES index -> DX21ParamIndex (or -1 if unavailable)
 // ────────────────────────────────────────────────────────────────────
 static const int kEditToAdapter[] = {
-    /*  0  ALG                */  kParamAlgorithm,  // 12
-    /*  1  ALGORITHM SELECT   */  kParamAlgorithm,  // 12 (long form)
-    /*  2  FEEDBACK           */  kParamFeedback,    // 13
-    /*  3  LFO WAVE:          */  kParamLFOWave,      // 15
-    /*  4  LFO SPEED          */  kParamLFOSpeed,     // 8
-    /*  5  LFO DELAY          */  kParamLFODelay,     // 9
-    /*  6  LFO PMD            */  kParamPMD,          // 10
-    /*  7  LFO AMD            */  kParamAMD,          // 11
+    /*  0  ALG                */  kParamAlgorithm,  // 13
+    /*  1  ALGORITHM SELECT   */  kParamAlgorithm,  // 13 (long form)
+    /*  2  FEEDBACK           */  kParamFeedback,    // 14
+    /*  3  LFO WAVE:          */  kParamLFOWave,      // 16
+    /*  4  LFO SPEED          */  kParamLFOSpeed,     // 9
+    /*  5  LFO DELAY          */  kParamLFODelay,     // 10
+    /*  6  LFO PMD            */  kParamPMD,          // 11
+    /*  7  LFO AMD            */  kParamAMD,          // 12
     /*  8  P MOD SENS.        */  -1,                 // (no getter)
     /*  9  A MOD SENS.        */  -1,
     /* 10  E BIAS SENS.       */  -1,
     /* 11  KEY VELOCITY       */  -1,
     /* 12  FREQUENCY =        */  -1,
     /* 13  DETUNE    =        */  -1,
-    /* 14  EG  AR (OP1)       */  kParamOp0AR,        // 16
+    /* 14  EG  AR (OP1)       */  kParamOp0AR,        // 17
     /* 15  EG  D1R            */  kParamOp0D1R,
     /* 16  EG  D1L            */  kParamOp0D1L,
     /* 17  EG  D2R            */  -1,
     /* 18  EG  RR             */  -1,
-    /* 19  OUTPUT LEVEL       */  kParamOp0Out,       // 19
+    /* 19  OUTPUT LEVEL       */  kParamOp0Out,       // 20
     /* 20  RATE SCALE         */  -1,
     /* 21  LEVEL SCALE        */  -1,
     /* 22  PEG RATE 1         */  -1,
@@ -67,13 +67,13 @@ static const int kEditToAdapter[] = {
     /* 25  PEG LEVEL 2        */  -1,
     /* 26  PEG RATE 3         */  -1,
     /* 27  PEG LEVEL 3        */  -1,
-    /* 28  SAW UP             */  kParamLFOWave,      // 15 (sets wave=0)
-    /* 29  SQUARE             */  kParamLFOWave,      // 15 (sets wave=1)
-    /* 30  TRIANGL            */  kParamLFOWave,      // 15 (sets wave=2)
-    /* 31  S/HOLD             */  kParamLFOWave,      // 15 (sets wave=3)
+    /* 28  SAW UP             */  kParamLFOWave,      // 16 (sets wave=0)
+    /* 29  SQUARE             */  kParamLFOWave,      // 16 (sets wave=1)
+    /* 30  TRIANGL            */  kParamLFOWave,      // 16 (sets wave=2)
+    /* 31  S/HOLD             */  kParamLFOWave,      // 16 (sets wave=3)
     /* 32  EG Copy            */  -1,                 // utility, not a param
     /* 33  from OP            */  -1,
-    /* 34  LFO SYNC :         */  kParamLFOSync,      // 14
+    /* 34  LFO SYNC :         */  kParamLFOSync,      // 15
     /* 35  Memory Protected   */  -1,                 // global flag
 };
 static_assert(sizeof(kEditToAdapter)/sizeof(kEditToAdapter[0]) == EDIT_PARAM_COUNT,
@@ -577,6 +577,123 @@ void CDX21Display::InvalidateIfStale(unsigned maxAgeMs) {
             m_bDirty = true;
         }
     }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Encoder action API
+// ────────────────────────────────────────────────────────────────────
+//
+// Number of selectable items per mode. Mirrors the kEditToAdapter /
+// kFunctionToAdapter / kPerformanceToAdapter tables above. Used by
+// the encoder for wrap-around math and by the renderer to clamp the
+// param index display ("N/MAX").
+int CDX21Display::GetParamCountForMode() const {
+    switch (m_Mode) {
+        case kModePlay:        return 128;                       // 1..128 voices
+        case kModeEdit:        return EDIT_PARAM_COUNT;
+        case kModePerformance: return PLAY_LABEL_COUNT;
+        case kModeFunction:    return FUNCTION_COUNT;
+        case kModeMemory:      return TAPE_LABEL_COUNT;
+    }
+    return 0;
+}
+
+// SelectParam moves the per-mode cursor by `delta` (typically ±1 per
+// encoder detent), wrapping at both ends. Pure UI state — does not
+// touch the synth. The renderer redraws the next time it ticks.
+void CDX21Display::SelectParam(int delta) {
+    int maxIdx = GetParamCountForMode();
+    if (maxIdx <= 0) return;
+    int idx = m_ParamIdx + delta;
+    // Wrap modulo maxIdx. C's % on negatives can yield negative
+    // results, so the explicit two-step handles both directions.
+    idx %= maxIdx;
+    if (idx < 0) idx += maxIdx;
+    m_ParamIdx = idx;
+    MarkDirty();
+}
+
+// AdjustValue does the per-mode meaningful change for the current
+// cursor position. Returns the new absolute value when one is
+// computable, or -1 when the cursor points at a "n/a" param /
+// un-bound adapter / mode without live binding.
+//
+// Behaviour matrix:
+//   PLAY         : m_ParamIdx 0..127 → voice 1..128 (kParamInstrument)
+//   EDIT         : kEditToAdapter[m_ParamIdx]   ±delta → m_pAdapter
+//   FUNCTION     : kFunctionToAdapter[m_ParamIdx] ±delta → m_pAdapter
+//   PERFORMANCE  : m_ParamIdx 0..127 → voice 1..128 (kParamInstrument)
+//   MEMORY       : m_ParamIdx 0..TAPE_LABEL_COUNT-1 → cursor only
+//                  (tape dialogs are non-numeric; rotate and confirm)
+//
+// "delta" is interpreted in the natural units of the parameter
+// (1 raw VCED byte, 1 voice number, 1 waveform step, etc.). The
+// adapter's setParameter() clamps to 0..1 and the underlying synth
+// method rounds to the right integer range.
+int CDX21Display::AdjustValue(int delta) {
+    if (!m_pAdapter) return -1;
+    int kp = -1;
+
+    switch (m_Mode) {
+        case kModePlay:
+        case kModePerformance:
+            // Both modes use the same voice cursor. PLAY shows
+            // 1..128, PERFORMANCE uses the same range (we don't have
+            // a separate 32-perf memory store yet — that's a future
+            // step once the user wires up a second encoder or
+            // button). Delta moves the voice by ±1.
+            kp = kParamInstrument;
+            break;
+
+        case kModeEdit:
+            if (m_ParamIdx < 0 || m_ParamIdx >= EDIT_PARAM_COUNT) return -1;
+            kp = kEditToAdapter[m_ParamIdx];
+            break;
+
+        case kModeFunction:
+            if (m_ParamIdx < 0 || m_ParamIdx >= FUNCTION_COUNT) return -1;
+            kp = kFunctionToAdapter[m_ParamIdx];
+            break;
+
+        case kModeMemory:
+            // Tape dialogs are not numeric. The cursor-only mode
+            // (SelectParam) covers navigation; the user confirms
+            // via COMPARE (double-click). We don't write to the
+            // synth here.
+            return -1;
+    }
+
+    if (kp < 0) return -1;  // EDIT/FUNCTION entry with no live binding
+
+    // For Play/Performance the cursor index 0..127 maps directly to
+    // a normalised 0..1 program number. For EDIT/FUNCTION we add
+    // delta to the current normalised value and clamp.
+    float current = m_pAdapter->getParameter(kp);
+    float next    = current;
+    if (m_Mode == kModePlay || m_Mode == kModePerformance) {
+        // step per detent = 1 / (N-1), N = num programs.
+        int n = m_pAdapter->getNumPresets();
+        if (n <= 1) return -1;
+        float step = 1.0f / (float)(n - 1);
+        next = current + (float)delta * step;
+    } else {
+        // Most EDIT/FUNCTION params map a 0..1 float onto a small
+        // integer range. We step by 1/255 of the range per detent,
+        // which is ≈1 raw VCED byte — close to the original DX21
+        // "value-rotate" feel.
+        next = current + (float)delta * (1.0f / 255.0f);
+    }
+    if (next < 0.0f) next = 0.0f;
+    if (next > 1.0f) next = 1.0f;
+    m_pAdapter->setParameter(kp, next);
+
+    // Mirror the change into the m_Value display field so the
+    // renderer's "=NN" / big number can show it without re-reading.
+    m_Value = (int)(next * 255.0f + 0.5f);
+    if (m_Value < 0)   m_Value = 0;
+    if (m_Value > 255) m_Value = 255;
+    MarkDirty();
+    return m_Value;
 }
 
 void CDX21Display::RenderSplashMode() {

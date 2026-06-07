@@ -90,3 +90,14 @@ out/kernel_rpi3.img: data   # gültiges Pi 3 / Zero 2 W 64-bit Image
 - **Nuked-OPP-xcent**: AR=18–30 Plateau-Logik. Siehe `OPM_SetAttackSkip()` in `opm.c`.
 - **MiniDexed** (https://github.com/synthfrumi/MiniDexed): Vorbild für die Multi-Core-Audio-Architektur auf Pi 3/4.
 - **picoX21H** (https://github.com/synthfrumi/picoX21H): Vorbild für die DX21-Patch-Architektur (applyPatch-at-program-change).
+
+## UI action surface (encoder + click)
+- `CDX21Display::SelectParam(±1)` — pure UI cursor move through the per-mode list. Wraps. No synth write.
+- `CDX21Display::AdjustValue(±1)` — writes through `COPMEmuAdapter::setParameter()`:
+  - PLAY / PERFORMANCE → `kParamInstrument` (program change)
+  - EDIT → `kEditToAdapter[m_ParamIdx]` (raw VCED byte via `writeVcedGlobal/Operator`)
+  - FUNCTION → `kFunctionToAdapter[m_ParamIdx]`
+  - MEMORY → no-op (tape dialogs are non-numeric)
+  Returns the new value (or -1 for un-bound entries).
+- `CDX21Input::m_bBrowse` — true (default) means rotation navigates the list; false means rotation edits the current param's value. Toggled by the first tick of `EventSwitchHold`. The second hold-tick (≈2 s) still toggles MEMORY PROTECT. Initialise the constructor with `m_bBrowse(true)` so a freshly-cycled mode starts in browse.
+- Both `SelectParam` and `AdjustValue` are called from the CKY040 ISR dispatch path; they only touch adapter get/set (which are safe to call from the main thread / display side) and update display members. Never call them from the audio callback.

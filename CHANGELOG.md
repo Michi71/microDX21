@@ -5,6 +5,18 @@ All notable changes to microDX21, in reverse chronological order.
 ## [Unreleased]
 
 ### Added
+- **Live encoder → synth parameter writes**:
+  - `COPMEmuAdapter::kParamInstrument` (0): normalized 0..1 → program 0..N-1. New entry at the top of the enum; all other indices shifted by +1.
+  - `CDX21Display::SelectParam(delta)` and `CDX21Display::AdjustValue(delta)`:
+    - `SelectParam(±1)`: pure UI cursor move through the per-mode list (PLAY: 1..128, EDIT: 0..35, FUNCTION: 0..45, PERFORMANCE: 0..5, MEMORY: 0..8). Wraps at both ends.
+    - `AdjustValue(±1)`: writes the meaningful change for the current mode through `COPMEmuAdapter::setParameter()`:
+      - PLAY / PERFORMANCE → `kParamInstrument` (program change, immediate)
+      - EDIT → `kEditToAdapter[m_ParamIdx]` (writes through `writeVcedGlobal` / `writeVcedOperator`)
+      - FUNCTION → `kFunctionToAdapter[m_ParamIdx]`
+      - MEMORY → no-op (tape dialogs are non-numeric)
+    Returns the new absolute value (or -1 for un-bound entries).
+  - `CDX21Input::m_bBrowse` flag: rotation in EDIT/FUNCTION is either "navigate the list" (browse=true, default) or "edit the value of the current param" (browse=false). The first tick of `EventSwitchHold` toggles the flag; the second tick (≈2 s) still toggles MEMORY PROTECT.
+  - Status messages: rotation shows `VAL=NNN`, hold-tick-1 shows `BROWSE` / `EDIT`, hold-tick-2 shows `MEMORY PROTECTED` / `MEMORY UNPROTECTED`.
 - **Power-on splash**: `CDX21Display::SetSplash(true)` + 2-second delay in `kernel.cpp::Initialize()`. While splash is active, `Render()` ignores `m_Mode` and shows the boot banner:
   - Page 0: `*  YAMAHA  *` (6×8 text)
   - Page 1: `DX21` (big 7-segment, 32 px tall, fills the row)

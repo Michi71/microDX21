@@ -76,6 +76,36 @@ public:
     void SetParamIndex(int idx)             { m_ParamIdx = idx; MarkDirty(); }
     int  GetParamIndex() const              { return m_ParamIdx; }
 
+    // ───────────────────────────────────────────────
+    // Encoder action API
+    // ───────────────────────────────────────────────
+    //
+    // SelectParam() moves the cursor through the per-mode parameter
+    // list (PLAY: voice 0..127, EDIT: 0..EDIT_PARAM_COUNT-1, ...).
+    // Wraps at both ends. Does NOT write to the synth — it's a pure
+    // UI cursor move.
+    //
+    // AdjustValue() does the meaningful change for the current mode:
+    //   PLAY         : 1..128 voice select (kParamInstrument)
+    //   EDIT         : value of EDIT_PARAM_NAMES[m_ParamIdx] ±delta
+    //   FUNCTION     : value of FUNCTION_NAMES[m_ParamIdx]   ±delta
+    //   PERFORMANCE  : 0..127 program select
+    //   MEMORY       : 0..TAPE_LABEL_COUNT-1 tape dialog
+    //
+    // delta is typically ±1 per encoder detent. The synth write
+    // happens through the bound COPMEmuAdapter (if any). For modes
+    // without a live binding, the integer m_Value is updated and
+    // the renderer shows it.
+    //
+    // Returns the new absolute value (or -1 if not applicable / no
+    // adapter). Callers can use this to drive a status message.
+    void SelectParam(int delta);
+    int  AdjustValue(int delta);
+
+    // Total number of selectable items for the current mode. Used
+    // by the encoder for the wrap-around math.
+    int  GetParamCountForMode() const;
+
     void SetValue(int v)                    { m_Value = v; MarkDirty(); }
     int  GetValue() const                   { return m_Value; }
 
