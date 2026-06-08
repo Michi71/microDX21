@@ -141,6 +141,20 @@ public:
     int  GetMemoryYesNo() const         { return m_MemoryYesNo; }
     int  GetMemoryGroup() const         { return m_MemoryGroup; }
 
+    // ───────────────────────────────────────────────
+    // Function-mode action triggers
+    // ───────────────────────────────────────────────
+    //
+    // The DX21's FUNCTION mode has a few "action" entries (Recall
+    // Edit?, Init. Voice?, Midi Transmit?) that don't take a
+    // numeric value — they trigger a one-shot side effect when
+    // the user confirms. TriggerFunctionAction() is called by
+    // the input layer when the user clicks the encoder while
+    // sitting on a FUNCTION entry whose kp == -1. Returns true
+    // if an action was triggered (so the caller can show a
+    // status message), false otherwise.
+    bool TriggerFunctionAction();
+
     void SetValue(int v)                    { m_Value = v; MarkDirty(); }
     int  GetValue() const                   { return m_Value; }
 

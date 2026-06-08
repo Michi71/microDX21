@@ -150,6 +150,16 @@ enum DX21ParamIndex {
     kParamBreathEGBias,     // 0..99
     kParamBreathEGDepth,    // 0..99
 
+    // Modulation Wheel sensitivity (B8/B9). 82..83.
+    kParamMWPitchRange,     // 0..99
+    kParamMWAmpRange,       // 0..99
+
+    // MIDI routing toggles (A5/A6/A7/A2). 84..87.
+    kParamCHInfo,           // 0/1 (A6: Channel Information ON/OFF)
+    kParamSysInfo,          // 0/1 (A7: SysEx Information ON/OFF)
+    kParamTransmitCh,       // 0..15 (A5: 0=off, 1..15=ch)
+    kParamDualDetune,       // 0..99 (A2: DUAL-mode side-B detune)
+
     kParamTotalCount
 };
 
@@ -423,6 +433,17 @@ public:
             case kParamBreathEGBias:    m_synth->setBreathEGBias((int)(value * 99.0f));     break;
             case kParamBreathEGDepth:   m_synth->setBreathEGDepth((int)(value * 99.0f));    break;
 
+            // Modulation Wheel sensitivity (B8/B9). Direct call to
+            // m_synth's CC#1 range setter.
+            case kParamMWPitchRange:  m_synth->setMWPitchRange((int)(value * 99.0f)); break;
+            case kParamMWAmpRange:    m_synth->setMWAmpRange  ((int)(value * 99.0f)); break;
+
+            // MIDI routing (A5/A6/A7/A2).
+            case kParamCHInfo:         m_synth->setMidiChInfoOn(value > 0.5f); break;
+            case kParamSysInfo:        m_synth->setMidiSysexInfoOn(value > 0.5f); break;
+            case kParamTransmitCh:     m_synth->setMidiTransmitChannel((int)(value * 15.99f)); break;
+            case kParamDualDetune:     m_synth->setDualDetune((int)(value * 99.0f)); break;
+
             default:
                 break;
         }
@@ -546,6 +567,16 @@ public:
             case kParamOp3DET: { DX21_PATCH_PTR(); return (float)p->op[3].det / 6.0f;  }
             #undef DX21_PATCH_PTR
 
+            // Modulation Wheel sensitivity (B8/B9).
+            case kParamMWPitchRange:  return (float)m_synth->getMWPitchRange() / 99.0f;
+            case kParamMWAmpRange:    return (float)m_synth->getMWAmpRange()   / 99.0f;
+
+            // MIDI routing (A5/A6/A7/A2).
+            case kParamCHInfo:        return m_synth->getMidiChInfoOn()    ? 1.0f : 0.0f;
+            case kParamSysInfo:       return m_synth->getMidiSysexInfoOn() ? 1.0f : 0.0f;
+            case kParamTransmitCh:    return (float)m_synth->getMidiTransmitChannel() / 15.0f;
+            case kParamDualDetune:    return (float)m_synth->getDualDetune() / 99.0f;
+
             // Global LFO modulation sensitivity.
             case kParamPMS: {
                 const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
@@ -610,6 +641,10 @@ public:
             "Key Offset", "Master Tune", "Mono Mode", "PB Mode",
             // Breath (78-81)
             "BC Pitch", "BC Amp", "BC EG Bias", "BC EG Depth",
+            // Modulation Wheel (82-83)
+            "MW Pitch", "MW Amp",
+            // MIDI routing (84-87)
+            "CH Info", "Sys Info", "Transmit Ch", "Dual Detune",
         };
         if (index < 0 || index >= kParamTotalCount) return "?";
         return kNames[index];
@@ -790,6 +825,26 @@ public:
         snprintf(probe, sizeof(probe), "%s/voice_00.json", path);
         if (!m_pFS->exists(probe)) return MemoryResult::VerifyMismatch;
         return MemoryResult::Ok;
+    }
+
+    // ── Voice-editing actions (A9 Recall, A10 Init, A8 Bulk) ──
+    //
+    // These don't take a value — they trigger a one-shot side effect
+    // on the synth. The UI dispatches them when the user lands on
+    // the corresponding FUNCTION entry and presses the encoder.
+    void TriggerInitVoice()      { if (m_synth) m_synth->initVoice();      }
+    void TriggerSaveEditRecall() { if (m_synth) m_synth->saveEditRecall(); }
+    void TriggerLoadEditRecall() { if (m_synth) m_synth->loadEditRecall(); }
+
+    // Trigger a 32-voice VCED bulk dump over the current SysEx
+    // out path (m_sysexOutFn). Used by FUNCTION A8 "MIDI Transmit?".
+    // Returns true on success.
+    bool TriggerBulkTransmit() {
+        if (!m_synth || !m_sysexOutFn) return false;
+        std::vector<uint8_t> data;
+        if (!m_synth->memory().exportSysex(data)) return false;
+        m_sysexOutFn(m_sysexOutUser, data.data(), data.size());
+        return true;
     }
 
     // ── Raw access for audio thread ───────────────────────

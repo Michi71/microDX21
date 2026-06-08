@@ -99,8 +99,8 @@ static const int kFunctionToAdapter[] = {
     /*  1  Master Tune =      */  kParamMasterTune,    // -64..+63
     /*  2  Dual Detune        */  -1,                  // not implemented yet
     /*  3  Midi Switch :      */  -1,                  // per-channel
-    /*  4  Midi Ch Info:      */  -1,                  // info display
-    /*  5  Midi Sy Info:      */  -1,                  // info display
+    /*  4  Midi Ch Info:      */  kParamCHInfo,
+    /*  5  Midi Sy Info:      */  kParamSysInfo,
     /*  6  Midi Recv Ch =     */  -1,                  // per-channel
     /*  7  Midi Omni : ON     */  -1,                  // per-channel
     /*  8  Recall Edit ?      */  -1,                  // dialog
@@ -804,6 +804,45 @@ int CDX21Display::AdjustValue(int delta) {
 // Action index → adapter call. The numeric index is enough; the
 // display uses literal action-name tables inline where the renderer
 // needs them.
+bool CDX21Display::TriggerFunctionAction() {
+    if (!m_pAdapter || m_Mode != DX21UI::kModeFunction) return false;
+    int idx = m_ParamIdx;
+    if (idx < 0 || idx >= FUNCTION_COUNT) return false;
+    if (kFunctionToAdapter[idx] != -1) return false;  // not an action
+
+    // Hard-coded mapping of FUNCTION entry index → adapter trigger.
+    // The DX21's FUNCTION table has these at fixed positions.
+    switch (idx) {
+        case 8:  // A9: Recall Edit ?
+            m_pAdapter->TriggerLoadEditRecall();
+            SetStatus("EDIT RECALLED");
+            MarkDirty();
+            return true;
+        case 10: // A10: Init. Voice ?
+            m_pAdapter->TriggerInitVoice();
+            SetStatus("VOICE INITIALIZED");
+            MarkDirty();
+            return true;
+        case 11: // A11: Save to Tape ?  (this is in MEMORY mode now, but
+                // FUNCTION index 11 is still a dialog. Skip here —
+                // handled by the MEMORY-mode state machine instead.)
+            return false;
+        case 15: // A14: Load from Tape ?
+            return false;  // ditto
+        case 18: // A17: Tape # ? to Buff
+            return false;  // ditto
+        case 41: // A8: MIDI Transmit ?
+            if (m_pAdapter->TriggerBulkTransmit()) {
+                SetStatus("BULK TRANSMITTED");
+            } else {
+                SetStatus("BULK FAILED");
+            }
+            MarkDirty();
+            return true;
+    }
+    return false;
+}
+
 void CDX21Display::MemoryPickAction(int delta) {
     if (m_MemoryStage != 0) return;
     int n = 3;  // Save, Load, Verify

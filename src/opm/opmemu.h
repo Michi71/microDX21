@@ -153,6 +153,53 @@ public:
     // path touches m_chip directly without locking.
     void allNotesOff();
     void resetEngine();
+
+    // ───────────────────────────────────────────────
+    // Voice-Editing helpers (A9, A10, A2, A5, A6, A7, B8, B9)
+    // ───────────────────────────────────────────────
+    //
+    // initVoice() — copy a default VCED (the "Initialized Voice"
+    // factory preset, comparable to the DX21's "Init. Voice ?"
+    // function) into the currently-edited voice slot, and apply
+    // it to the OPM. Caller must call applyPatchToVoice() — wait,
+    // we do that internally for the active voice (m_sysexEditVoice).
+    void initVoice();
+
+    // saveEditRecall() / loadEditRecall() — implement the DX21's
+    // "Edit Recall ?" function. The edit buffer is whatever's
+    // currently in m_memory.getRamVoice(m_sysexEditVoice); we
+    // snapshot it into m_editRecall on save, and restore from
+    // m_editRecall on load. The OPM is re-applied on load.
+    void saveEditRecall();
+    void loadEditRecall();
+
+    // Mod-Wheel / Breath setter accessors. CC#1 / CC#2 are pushed
+    // in via processMidiBuffer(), so these are mostly for testing
+    // and for the UI encoder (which can simulate a wheel value).
+    void setMWValue(int v)        { if (v<0) v=0; if (v>127) v=127; m_mwValue = v; }
+    void setMWPitchRange(int v)   { if (v<0) v=0; if (v>99) v=99; m_mwPitchRange = v; }
+    void setMWAmpRange(int v)     { if (v<0) v=0; if (v>99) v=99; m_mwAmpRange   = v; }
+    int  getMWValue() const       { return m_mwValue; }
+    int  getMWPitchRange() const  { return m_mwPitchRange; }
+    int  getMWAmpRange() const    { return m_mwAmpRange; }
+
+    // MIDI settings (A5/A6/A7/A2)
+    void setMidiChInfoOn(bool on)  { m_chInfoOn = on; }
+    void setMidiSysexInfoOn(bool on){ m_sysexInfoOn = on; }
+    void setMidiTransmitChannel(int ch) {
+        if (ch < 0) ch = 0; if (ch > 15) ch = 15; m_midiTransmitCh = ch;
+    }
+    void setDualDetune(int v) {
+        if (v < 0) v = 0; if (v > 99) v = 99; m_dualDetune = v;
+    }
+    bool getMidiChInfoOn() const     { return m_chInfoOn; }
+    bool getMidiSysexInfoOn() const  { return m_sysexInfoOn; }
+    int  getMidiTransmitChannel() const { return m_midiTransmitCh; }
+    int  getDualDetune() const       { return m_dualDetune; }
+
+    // Constants for the A10 Init Voice (factory defaults).
+    // Defined in opmemu.cpp as a static const DX21_Patch.
+    static const DX21_Patch* GetInitVoicePatch();
     float getMasterGain() const { return m_masterGain; }
 
     // --- Pitch Bend ---
@@ -253,12 +300,27 @@ private:
     enum PBMode { PBAll, PBLow, PBHigh, PBKOn };
     PBMode m_pbMode;
 
-    // --- Breath Controller ---
+    // --- Modulation Wheel (CC#1) + Breath (CC#2) ---
+    int m_mwValue;           // 0..127 (MIDI CC#1)
+    int m_mwPitchRange;      // 0..99 (B8: MW→LFO PMD scale)
+    int m_mwAmpRange;        // 0..99 (B9: MW→LFO AMD scale)
     int m_breathValue;       // 0..127 (MIDI CC#2)
-    int m_breathPitchBias;   // 0..99
-    int m_breathAmplitude;   // 0..99
-    int m_breathEGBias;      // 0..99
+    int m_breathPitchBias;   // 0..99  (B12)
+    int m_breathAmplitude;   // 0..99  (B11)
+    int m_breathEGBias;      // 0..99  (B13)
     int m_breathEGDepth;     // 0..99
+
+    // --- Function-mode MIDI settings ---
+    bool m_chInfoOn;         // A6: Channel Information ON/OFF
+    bool m_sysexInfoOn;      // A7: System (SysEx) Information ON/OFF
+    int  m_midiTransmitCh;   // A5: 0..15 (0 = off, 1..15 = ch)
+    int  m_dualDetune;       // A2: 0..99 (DUAL-mode side-B detune)
+
+    // --- Edit-Recall buffer (A9) ---
+    // A 2nd copy of the current edit buffer that A9 "Recall Edit ?"
+    // swaps in. The synth keeps this in RAM only — never persisted.
+    DX21_Patch m_editRecall;
+    bool       m_bEditRecallValid;
     uint32_t m_voiceAge;
     uint32_t m_cycleAccum;  // fractional cycle accumulator for pitch accuracy
     int      m_staggerCount;  // remaining staggered noteOns to process

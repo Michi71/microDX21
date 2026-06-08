@@ -706,10 +706,20 @@ void COPMEmu::processMidiBuffer()
             m_sustainPedal = pedalOn;
         }
         else if (status == 0xB0 && ev.data1 == 1) {
-            // Modulation Wheel → LFO PMD (Pitch Modulation Depth)
-            // Map 0..127 → 0..99 (DX21 PMD range)
-            uint8_t pmd = static_cast<uint8_t>(ev.data2 * 99 / 127);
-            writeReg(0x19, (pmd & 0x7F) | 0x80);
+            // Modulation Wheel (CC#1). The DX21 B8 function
+            // (m_mwPitchRange, 0..99) sets the maximum depth of
+            // pitch modulation the wheel can apply; B9
+            // (m_mwAmpRange, 0..99) does the same for AMD. We
+            // scale the raw 0..127 CC#1 value by these ranges
+            // and write to the LFO's PMD/AMD register. When the
+            // range is 0 the wheel has no effect (the original
+            // DX21's "MW Pitch OFF" position).
+            int pmd = (ev.data2 * m_mwPitchRange) / 127;
+            int amd = (ev.data2 * m_mwAmpRange)   / 127;
+            // bit 7 of reg 0x19 = PMD, bits 0..6 = AMD
+            uint8_t reg = static_cast<uint8_t>(((pmd & 0x7F) << 7) | (amd & 0x7F));
+            writeReg(0x19, reg);
+            m_mwValue = ev.data2;
         }
         else if (status == 0xB0 && ev.data1 == 2) {
             // Breath Controller
@@ -1312,6 +1322,78 @@ void COPMEmu::allNotesOff()
 // from the panic path so a subsequent power-on starts from a clean
 // state (no stuck voices, no buffered NoteOns).
 // ===========================================================================
+// ===========================================================================
+// Init Voice — Set all 76 VCED bytes to the "Initialized Voice" factory
+// default and re-apply to the OPM. Comparable to the DX21's "Init. Voice ?"
+// function (A10 in the FUNCTION parameter list).
+//
+// The defaults are tuned to give a simple sine-like bell: a single carrier
+// with short decay, no modulation, no LFO. This is the canonical "empty
+// patch" a sound designer starts from when creating a new voice.
+// ===========================================================================
+const DX21_Patch* COPMEmu::GetInitVoicePatch() {
+    // Static const — initialised once at program start.
+    static const DX21_Patch kInitVoice = {
+        // alg, fb, lfo_speed, lfo_delay, pmd, amd, lfo_sync, lfo_wave
+        0, 0, 0, 0, 0, 0, 1, 0,
+        // pms, ams, key_offset
+        0, 0, 0,
+        // 4 operators, defaulting to a simple bell on OP1
+        {
+            // OP1 (carrier): ar, d1r, d2r, rr, d1l, ls, rs, ebs, ame, kvs, out, crs, det
+            { 31, 20, 0, 4, 0, 0, 0, 0, 0, 0, 99,  4, 3 },
+            // OP2..OP4 (modulators): muted
+            { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
+            { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
+            { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
+        },
+        "Init Voice"
+    };
+    return &kInitVoice;
+}
+
+void COPMEmu::initVoice() {
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+
+    DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return;
+
+    // Copy the static init patch into RAM and re-apply.
+    *ram = *GetInitVoicePatch();
+    applyPatchToVoice(voice, *ram);
+}
+
+// ===========================================================================
+// saveEditRecall — snapshot the current edit buffer into m_editRecall.
+// Called when the user first edits a parameter; subsequent edits
+// overwrite the buffer, but the first edit "freezes" the pre-edit
+// state. The DX21 actually only saves one snapshot per voice (no
+// multi-step undo); we follow suit.
+// ===========================================================================
+void COPMEmu::saveEditRecall() {
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+    DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return;
+    m_editRecall       = *ram;
+    m_bEditRecallValid = true;
+}
+
+// ===========================================================================
+// loadEditRecall — restore the snapshot and re-apply to the OPM.
+// Only valid if saveEditRecall() was called at least once.
+// ===========================================================================
+void COPMEmu::loadEditRecall() {
+    if (!m_bEditRecallValid) return;
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+    DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return;
+    *ram = m_editRecall;
+    applyPatchToVoice(voice, *ram);
+}
+
 void COPMEmu::resetEngine()
 {
     allNotesOff();

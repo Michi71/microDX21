@@ -172,6 +172,15 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
                 m_pDisplay->MemoryConfirm();
                 break;
             }
+            // In FUNCTION mode, the click triggers action entries
+            // (Recall / Init / Bulk Transmit) when the user is on a
+            // -1 entry. Otherwise it just cycles to the next mode
+            // (existing behaviour).
+            if (m_pDisplay->GetMode() == DX21UI::kModeFunction) {
+                if (m_pDisplay->TriggerFunctionAction()) {
+                    break;
+                }
+            }
             // Short click: cycle to next mode. The original DX21's
             // PLAY/EDIT/FUNCTION/COMPARE buttons are mapped to a single
             // "mode" encoder in microDX21 (we have one encoder, not 5
