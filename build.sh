@@ -118,7 +118,9 @@ cd ../../../../../..
 
 echo "Building libdisplay2..."
 cd libs/libdisplay2
-make clean || true
+# libdisplay2's Makefile has no `clean` target; just remove
+# any stale .o files (gitignored) for a deterministic build.
+rm -f *.o
 make -j${NCPU}
 cd ../..
 
