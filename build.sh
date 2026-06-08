@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # microDX21 Unified Build Script
 # Lokal & GitHub Actions kompatibel
 
@@ -70,7 +70,28 @@ if [ -f Config.mk ]; then
     make mrproper
 fi
 
-./configure \
+# circle-stdlib's ./configure (Circle 51.0+) uses the bash builtin `mapfile`,
+# which only exists in bash >= 4. macOS still ships bash 3.2 as /bin/bash, so
+# we must run configure with a newer bash (e.g. Homebrew's). Pick the first
+# bash >= 4 we can find.
+BASH4=""
+for cand in "${BASH:-}" "$(command -v bash)" /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$cand" ] || continue
+    if [ "$("$cand" -c 'echo ${BASH_VERSINFO[0]}')" -ge 4 ] 2>/dev/null; then
+        BASH4="$cand"
+        break
+    fi
+done
+
+if [ -z "$BASH4" ]; then
+    echo "Error: circle-stdlib's ./configure needs bash >= 4 (for 'mapfile')." >&2
+    echo "       macOS ships bash 3.2. Install a newer bash, e.g.: brew install bash" >&2
+    exit 1
+fi
+
+echo "Using bash for configure: $BASH4 ($("$BASH4" --version | head -1))"
+
+"$BASH4" ./configure \
     -r ${RPI} \
     --prefix "${TOOLCHAIN_PREFIX}" \
     ${OPTIONS} \
