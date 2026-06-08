@@ -157,7 +157,7 @@ DACI2CAddress=0              # 0 = on-board PWM, otherwise PCM5102A I2C addr
 MasterVolume=32
 ```
 
-### Display (new UI)
+### Display
 ```ini
 # 128x32 SSD1305 SPI OLED on SPI0
 DisplayType=ssd1305
@@ -178,16 +178,6 @@ EncoderPinA=10               # CLK
 EncoderPinB=9                # DT
 EncoderPinBtn=11              # SW
 ```
-
-### MIDI / USB
-```ini
-# MIDIChannel=0                 # 0 = Omni, 1..16 = specific
-USBGadget=0                  # 0 = USB Host (DIN-MIDI on USB-A adapter),
-                             # 1 = USB Gadget (Pi appears as USB MIDI device to host)
-USBGadgetPin=23              # VBUS-detect GPIO for Gadget/Host decision
-```
-
----
 
 ## Flashing the Pi
 
