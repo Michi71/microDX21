@@ -15,7 +15,7 @@ BLUE="\033[0;34m"
 NC="\033[0m"
 
 echo -e "${BLUE}───────────────────────────────────────────────${NC}"
-echo -e "${BLUE} VelvetKeys macOS Build System${NC}"
+echo -e "${BLUE} microDX21 macOS Build System${NC}"
 echo -e "${BLUE}───────────────────────────────────────────────${NC}"
 
 # ───────────────────────────────────────────────────────────────
@@ -59,7 +59,8 @@ echo -e "${GREEN}Target Raspberry Pi:${NC} $RPI"
 # Toolchain finden
 # ───────────────────────────────────────────────────────────────
 
-TOOLCHAIN_DIR="/usr/local/arm-gnu-toolchain-14.3.rel1-darwin-arm64-aarch64-none-elf/bin"
+# TOOLCHAIN_DIR="/usr/local/arm-gnu-toolchain-14.3.rel1-darwin-arm64-aarch64-none-elf/bin"
+TOOLCHAIN_DIR="/Applications/ArmGNUToolchain/15.2.rel1/aarch64-none-elf/bin"
 
 if [[ ! -d "$TOOLCHAIN_DIR" ]]; then
     echo -e "${RED}Error: ARM toolchain not found at:${NC}"

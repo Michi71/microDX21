@@ -32,7 +32,7 @@ else
     TOOLCHAIN_PREFIX="arm-none-eabi-"
 fi
 
-echo "Building VelvetKeys for Raspberry Pi $RPI"
+echo "Building microDX21 for Raspberry Pi $RPI"
 echo "Using toolchain prefix: $TOOLCHAIN_PREFIX"
 
 # ───────────────────────────────────────────────
@@ -102,10 +102,10 @@ make -j${NCPU}
 cd ../..
 
 # ───────────────────────────────────────────────
-# Build VelvetKeys
+# Build microDX21
 # ───────────────────────────────────────────────
 
-echo "Building VelvetKeys..."
+echo "Building microDX21..."
 cd src
 make clean || true
 make -j${NCPU}
