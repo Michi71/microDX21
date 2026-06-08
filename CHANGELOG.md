@@ -17,6 +17,12 @@ All notable changes to microDX21, in reverse chronological order.
   - `README.md` roadmap item "Audio over USB Gadget" replaced with "USB-MIDI Gadget (removed)" explaining the Comms-processor architecture.
 
 ### Added
+- **Safe shutdown (`CMicroDX21::Panic()` + `CKernel::PanicHandler()`)**:
+  - `COPMEmu::allNotesOff()` writes `KeyOff` (reg 0x08) to all 8 OPM channels and resets per-voice bookkeeping (active, sustained, note, velocity, portamento, attack samples, keyOnDelay).
+  - `COPMEmu::resetEngine()` = `allNotesOff()` + force every operator's TL to 127 (max attenuation) + clear the MIDI ring buffer (write=read=0) + clear the `m_sysexDirty[]` flags. After this the OPM outputs silence within one DMA buffer (~10 ms @ 48 kHz / 256 chunk).
+  - `CMicroDX21::Panic()` calls `resetEngine()` on the synth and `CSoundBaseDevice::Cancel()` on the sound device. Cancel is the standard Circle API: the next boot calls `Start()` from the audio-thread entry point and resumes cleanly.
+  - `CKernel::PanicHandler()` is now: `EnableIRQs` → `m_pMicroDX21->Panic()` → `m_pDX21Display->Off()` → `m_bRunning = false` → `wfi` forever. Brings the system to a safe, silent, OLED-off state on any unhandled exception so a power-cycle recovers cleanly.
+  - Graceful Run() exit also calls `Panic()` + `Off()` before returning `ShutdownHalt`, so a future "user holds button combo to shut down" feature gets the same teardown for free.
 - **Boot splash fade-in** (top-down, 4 pages over 1 s):
   - `CDX21Display::m_SplashProgress` (0..4) gates which pages of the splash banner are visible. Each step the kernel drives takes 250 ms, so the banner builds up as: page 0 (`*  YAMAHA  *`) at 0.25 s → +page 1 (7-seg `DX21`) at 0.5 s → +page 2 (`* SYNTHESIZER *`) at 0.75 s → +page 3 (`v0.1.0  INIT...`) at 1.0 s. 1 s hold at full banner, then `SetSplash(false)` to PLAY mode.
   - `CDX21Display::SetSplash(bool)` is now a real method (was inline) and resets `m_SplashProgress` on every entry, so a re-entry (e.g. after a panic) starts from the top instead of flashing the full banner.

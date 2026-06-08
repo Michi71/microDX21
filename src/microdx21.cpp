@@ -66,6 +66,26 @@ CMicroDX21::CMicroDX21(CConfig*          pConfig,
     m_PitchBendRange      = 2;
 }
 
+void CMicroDX21::Panic() {
+    CLogger::Get()->Write("microdx21", LogNotice, "Panic: silencing synth + stopping sound device");
+
+    // 1) Silences the OPM. COPMEmu::resetEngine() writes KeyOff to
+    //    all 8 channels, drops in-flight MIDI/SysEx, and forces
+    //    every operator's TL to 127 (max attenuation) so the DAC
+    //    plays silence within one DMA buffer.
+    if (m_piano.raw()) {
+        m_piano.raw()->resetEngine();
+    }
+
+    // 2) Stop the DMA + sound device. CSoundBaseDevice::Cancel()
+    //    is the standard Circle API for stopping the I2S/PWM
+    //    device; the next boot will Start() it again from the
+    //    audio-thread entry point.
+    if (m_pSoundDevice) {
+        m_pSoundDevice->Cancel();
+    }
+}
+
 CMicroDX21::~CMicroDX21()
 {
     for (unsigned i = 0; i < MaxUSBMIDIDevices; i++)

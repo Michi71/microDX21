@@ -132,6 +132,27 @@ public:
 
     // --- Master Gain ---
     void setMasterGain(float gain); // 0.0 .. 8.0, default 3.0
+
+    // ───────────────────────────────────────────────
+    // Safe-shutdown helpers
+    // ───────────────────────────────────────────────
+    //
+    // allNotesOff() — write KeyOff (reg 0x08) to all 8 OPM channels
+    // and mark every voice as inactive. The OPM's release phase will
+    // still ring out for a few ms until RR ends naturally, but no
+    // new notes can be triggered. The DAC plays silence once the
+    // release envelopes finish.
+    //
+    // resetEngine() — allNotesOff + write 0 to TL on all 4 ops of
+    // all 8 channels (reg 0x60). This silences the OPM completely
+    // within 1 DMA buffer (~10 ms at 48 kHz / 256 chunk) and is the
+    // hook called by the panic path.
+    //
+    // Both are safe to call from the main thread (not the audio ISR).
+    // Calling them from the audio thread is undefined — the audio
+    // path touches m_chip directly without locking.
+    void allNotesOff();
+    void resetEngine();
     float getMasterGain() const { return m_masterGain; }
 
     // --- Pitch Bend ---

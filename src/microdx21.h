@@ -83,6 +83,12 @@ public:
     // ───────────────────────────────────────────────
     // PARAMETERS
     // ───────────────────────────────────────────────
+    // Safe shutdown: silences the OPM and stops the sound device.
+    // Called by CKernel::PanicHandler() (and any future graceful
+    // shutdown path) so a subsequent reboot starts from silence
+    // rather than with stuck voices / a hot DAC.
+    void Panic();
+
     void        SetParameter(int index, float value);
     float       GetParameter(int index);
     const char* GetParameterName(int index);

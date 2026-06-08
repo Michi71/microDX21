@@ -320,6 +320,15 @@ CStdlibVKStdio::TShutdownMode CKernel::Run() {
         CScheduler::Get()->Yield();
     }
     CLogger::Get()->Write("kernel", LogNotice, "Core 0: Stopped");
+
+    // Graceful shutdown: bring the audio pipeline and the OLED to
+    // a safe state before the CStdlibApp::Run() epilogue tears
+    // everything down. This is the same sequence PanicHandler()
+    // runs, but triggered by the user setting m_bRunning = false
+    // from outside instead of by an exception.
+    if (m_pMicroDX21) m_pMicroDX21->Panic();
+    if (m_pDX21Display) m_pDX21Display->Off();
+
     return ShutdownHalt;
 }
 
@@ -389,11 +398,43 @@ void CKernel::RunCore3() {
 #endif
 
 void CKernel::PanicHandler() {
+    // CStdlibApp installs us as the panic sink. When a fatal
+    // exception (e.g. unhandled IRQ) fires, we get called with IRQs
+    // disabled. The job is to bring the system to a safe, silent
+    // state so the user can power-cycle without leaving stuck
+    // voices / a hot DAC / a frozen OLED panel.
+
     EnableIRQs();
+
     if (s_pThis) {
+        // 1) Silences the OPM and stops the sound device. This
+        //    is a non-trivial operation (4 OPM reg writes per
+        //    voice × 8 voices, plus a DMA Cancel), but it's safe
+        //    to call from this context because:
+        //    a) We've enabled IRQs above, so the audio-thread IRQ
+        //       can finish its current sample and won't touch the
+        //       DMA mid-Cancel.
+        //    b) resetEngine() is idempotent and only writes to
+        //       OPM registers (no I/O).
+        if (s_pThis->m_pMicroDX21) {
+            s_pThis->m_pMicroDX21->Panic();
+        }
+
+        // 2) Turn off the OLED. The SSD1305's Off() command stops
+        //    the charge pump so the panel isn't holding a charge
+        //    while the user is troubleshooting.
+        if (s_pThis->m_pDX21Display) {
+            s_pThis->m_pDX21Display->Off();
+        }
+
+        // 3) Signal the core loops to exit on their next iteration.
         s_pThis->m_bRunning.store(false, std::memory_order_release);
     }
+
+    // Drain any pending memory writes before parking the CPU.
     DataSyncBarrier();
+
+    // Park forever. The user can power-cycle to recover.
     while (true) {
         __asm__ volatile("wfi");
     }

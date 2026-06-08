@@ -1277,6 +1277,72 @@ void COPMEmu::setMasterGain(float gain)
 }
 
 // ===========================================================================
+// allNotesOff — Issue KeyOff to all 8 OPM channels. Each voice's release
+// phase will continue to ring out per its RR setting, but no new notes
+// can be triggered. Voice bookkeeping is reset so noteOn() will not
+// think any voice is "still playing" after the release is done.
+// ===========================================================================
+void COPMEmu::allNotesOff()
+{
+    // 1) Hardware: KeyOff on all 8 channels (reg 0x08, one byte per ch).
+    for (int ch = 0; ch < kNumVoices; ++ch) {
+        writeReg(0x08, static_cast<uint8_t>(ch));
+    }
+
+    // 2) Software: mark every voice as inactive and clear its
+    //    per-voice state. Skip the MIDI ring buffer — callers that
+    //    want to drop pending notes should call resetEngine() below.
+    for (int v = 0; v < kNumVoices; ++v) {
+        m_voices[v].active = false;
+        m_voices[v].sustained = false;
+        m_voices[v].note = -1;
+        m_voices[v].origNote = -1;
+        m_voices[v].velocity = 0;
+        m_voices[v].keyOnDelay = 0;
+        m_voices[v].currentPitch = 0.0f;
+        m_voices[v].targetPitch  = 0.0f;
+        m_voices[v].isPorting    = false;
+        m_voices[v].attackSamples = 0;
+    }
+}
+
+// ===========================================================================
+// resetEngine — Full audio-pipeline shutdown. Drops in-flight notes,
+// silences all OPM channels, and clears the MIDI ring buffer. Use this
+// from the panic path so a subsequent power-on starts from a clean
+// state (no stuck voices, no buffered NoteOns).
+// ===========================================================================
+void COPMEmu::resetEngine()
+{
+    allNotesOff();
+
+    // 3) Force every operator's TL to maximum attenuation (127) so
+    //    the OPM outputs silence even during the release phase.
+    //    bit 7 of reg 0x60 is OPP TL-ramp enable — keep it set so
+    //    the change is click-free.
+    for (int ch = 0; ch < kNumVoices; ++ch) {
+        for (int op = 0; op < 4; ++op) {
+            int slot = ch + OP_SLOT[op];
+            writeReg(0x60 + slot, 0x80 | 127);
+        }
+    }
+
+    // 4) Drop any pending MIDI events so a re-start doesn't see
+    //    NoteOns that were queued before the panic.
+    m_midiWritePos.store(0, std::memory_order_release);
+    m_midiReadPos.store(0,  std::memory_order_release);
+
+    // 5) Zero the deferred SysEx queue (real-time param changes
+    //    that haven't been applied yet). The opmemu.h struct doesn't
+    //    expose the bulk-dump drain/fill counters, so we only clear
+    //    the dirty flags here — applySysexChanges() won't reapply
+    //    anything until a new SysEx arrives.
+    for (int i = 0; i < kSysexNumParams; ++i) {
+        m_sysexDirty[i] = false;
+    }
+}
+
+// ===========================================================================
 // setPitchBend — apply global pitch bend to all active voices
 // MIDI pitch bend: 0..16383, center = 8192
 // ===========================================================================
