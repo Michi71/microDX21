@@ -55,12 +55,12 @@ Each stores: play mode, voice A/B, split point, balance, PB range, PB mode, port
 A minimal 128×32 SSD1305/SH1106 OLED + a single KY-040 rotary encoder. The display layout mirrors the original DX21's HD44780 2×16 character LCD, scaled to 128×32 pixels:
 
 ```
-┌──────────────────────────────────────────┐
-│  EDIT  3/36                  (page 0)    │  ← mode title + cursor
-│   7                             (page 1)  │  ← 7-seg big value (8×16)
-│  FEEDBACK                       (page 2)  │  ← parameter name
-│  MEMORY PROTECTED              (page 3)  │  ← status / unit
-└──────────────────────────────────────────┘
+┌───────────────────────────────────────┐
+│  EDIT  3/36                  (page 0) │  ← mode title + cursor
+│   7                          (page 1) │  ← 7-seg big value (8×16)
+│  FEEDBACK                    (page 2) │  ← parameter name
+│  MEMORY PROTECTED            (page 3) │  ← status / unit
+└───────────────────────────────────────┘
 ```
 
 - **CDX21Display** (`src/display/display_dx21.{h,cpp}`) wraps `CSSD1305SPIDisplay` from `libdisplay2` and renders 5 modes (PLAY, EDIT, PERFORMANCE, FUNCTION, MEMORY) + a COMPARE overlay. Mode title on top row, 7-segment-style large value (8×16) in the middle, parameter name and status on the bottom two rows.
