@@ -176,9 +176,21 @@ public:
     // Mod-Wheel / Breath setter accessors. CC#1 / CC#2 are pushed
     // in via processMidiBuffer(), so these are mostly for testing
     // and for the UI encoder (which can simulate a wheel value).
-    void setMWValue(int v)        { if (v<0) v=0; if (v>127) v=127; m_mwValue = v; }
-    void setMWPitchRange(int v)   { if (v<0) v=0; if (v>99) v=99; m_mwPitchRange = v; }
-    void setMWAmpRange(int v)     { if (v<0) v=0; if (v>99) v=99; m_mwAmpRange   = v; }
+    void setMWValue(int v) {
+        if (v < 0)   v = 0;
+        if (v > 127) v = 127;
+        m_mwValue = v;
+    }
+    void setMWPitchRange(int v) {
+        if (v < 0) v = 0;
+        if (v > 99) v = 99;
+        m_mwPitchRange = v;
+    }
+    void setMWAmpRange(int v) {
+        if (v < 0) v = 0;
+        if (v > 99) v = 99;
+        m_mwAmpRange = v;
+    }
     int  getMWValue() const       { return m_mwValue; }
     int  getMWPitchRange() const  { return m_mwPitchRange; }
     int  getMWAmpRange() const    { return m_mwAmpRange; }
@@ -187,10 +199,14 @@ public:
     void setMidiChInfoOn(bool on)  { m_chInfoOn = on; }
     void setMidiSysexInfoOn(bool on){ m_sysexInfoOn = on; }
     void setMidiTransmitChannel(int ch) {
-        if (ch < 0) ch = 0; if (ch > 15) ch = 15; m_midiTransmitCh = ch;
+        if (ch < 0)  ch = 0;
+        if (ch > 15) ch = 15;
+        m_midiTransmitCh = ch;
     }
     void setDualDetune(int v) {
-        if (v < 0) v = 0; if (v > 99) v = 99; m_dualDetune = v;
+        if (v < 0)  v = 0;
+        if (v > 99) v = 99;
+        m_dualDetune = v;
     }
     bool getMidiChInfoOn() const     { return m_chInfoOn; }
     bool getMidiSysexInfoOn() const  { return m_sysexInfoOn; }

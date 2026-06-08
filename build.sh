@@ -1,9 +1,21 @@
 #!/bin/bash
-# VelvetKeys Unified Build Script
+# microDX21 Unified Build Script
 # Lokal & GitHub Actions kompatibel
 
 set -e
 set -o pipefail
+
+# ───────────────────────────────────────────────
+# Toolchain-Pfad (lokal, 15.2.rel1)
+# ───────────────────────────────────────────────
+# Default to the local ARM GNU Toolchain 15.2.rel1 if available;
+# the CI / GitHub-Actions environment overrides this via
+# $TOOLCHAIN_BIN or by having `aarch64-none-elf-*` on PATH already.
+if [ -z "${TOOLCHAIN_BIN:-}" ]; then
+    if [ -d "/Applications/ArmGNUToolchain/15.2.rel1/aarch64-none-elf/bin" ]; then
+        export PATH="/Applications/ArmGNUToolchain/15.2.rel1/aarch64-none-elf/bin:$PATH"
+    fi
+fi
 
 # ───────────────────────────────────────────────
 # Parameter prüfen
