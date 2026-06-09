@@ -43,6 +43,33 @@ Each stores: play mode, voice A/B, split point, balance, PB range, PB mode, port
 | OLED display (SSD1306/SSD1305/SH1106, I2C or SPI) | optional | without it the synth still works (headless) |
 | KY-040 rotary encoder | optional | for the new UI; without it use MIDI CC instead |
 
+### microDX21 stack (Pi Zero 2 WH reference build)
+
+The current default target. Four boards stacked through a single 2×20 GPIO header, top to bottom:
+
+1. **Waveshare 2.23" OLED HAT** — SSD1305 / SH1106, 128×32 px, SPI or I2C, 3.3 V.
+2. **Adafruit Perma-Proto Bonnet Mini (ADA3203)** — pass-through plus a 5-wire breakout (`ENC_A`, `ENC_B`, `ENC_SW`, `GND`, `+3V3`) for the encoder. No jacks, no encoder mounted on this board.
+3. **WM8960 Hi-Fi Sound Card HAT** — I2S DAC, the only board carrying audio outputs (headphone / line out L+R, plus a speaker terminal block).
+4. **Raspberry Pi Zero 2 WH** — BCM2710A1, 4× Cortex-A53 @ 1.0 GHz, 512 MB. The KY-040 encoder sits loose next to the stack, wired to the proto bonnet via the 5-wire ribbon only.
+
+<img src="doc/images/microdx21_stack_exploded.png" alt="microDX21 hardware stack — exploded view" width="480">
+
+Pin numbers are not fixed — the stack is a *reference build*, not a wiring contract. See `config/microdx21.ini` for the current values. The KY-040's 5 wires (`ENC_A`, `ENC_B`, `ENC_SW`, `GND`, `+3V3`) terminate on the proto bonnet and can be remapped to any free GPIOs in software.
+
+Current build (Pi Zero 2 WH):
+
+| Encoder wire | Pi GPIO | Notes |
+|---|---|---|
+| `ENC_A` | GPIO5 | general purpose, no alt function |
+| `ENC_B` | GPIO6 | general purpose, no alt function |
+| `ENC_SW` | GPIO13 | button / switch input |
+| `GND` | any GND pin | return |
+| `+3V3` | any 3V3 pin | encoder VCC |
+
+GPIO5/6/13 were chosen because they have no other assigned role on this build (no I2C, no SPI, no hardware PWM, no PCM/PLL), so the encoder is fully isolated from the I2S/I2C paths used by the WM8960 and the OLED.
+
+> The schematic source (`doc/images/microdx21_stack_exploded.svg`) and the render prompt (`doc/images/microdx21_stack_exploded.prompt.md` + `.body.txt`) are checked in next to the PNG so the diagram can be re-rendered or edited.
+
 ### macOS dev host
 - Apple Silicon (M1/M2/M3/M4) or Intel
 - CMake 3.10+, SDL2, PortMidi (for `test/standalone.cpp`)
