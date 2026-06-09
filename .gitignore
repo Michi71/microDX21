@@ -49,6 +49,7 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+!src/Makefile
 install_manifest.txt
 compile_commands.json
 
@@ -71,3 +72,13 @@ Testing/
 build/
 .claude/
 CLAUDE.md
+/libs
+
+# microDX21 build artifacts (kernel8.* live in src/ from Circle's makefile)
+src/kernel8.elf
+src/kernel8.img
+src/kernel8.lst
+src/kernel8.map
+
+# build.sh copies the kernel image to out/
+out/

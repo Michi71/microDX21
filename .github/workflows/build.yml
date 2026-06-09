@@ -1,0 +1,237 @@
+name: Build microDX21
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. v0.1.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: true
+  push:
+    branches: [main, develop]
+
+jobs:
+  build:
+    name: Build for Raspberry Pi ${{ matrix.rpi }}
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        rpi: [3, 4, 5]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compute cache keys
+        id: cachekeys
+        run: |
+          echo "toolchain=toolchain-15.2.rel1" >> $GITHUB_OUTPUT
+          echo "circle=circle-rpi${{ matrix.rpi }}-$(git rev-parse HEAD:libs/circle-stdlib)" >> $GITHUB_OUTPUT
+          echo "git_info=$(date +%Y-%m-%d)-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Cache ARM toolchain
+        uses: actions/cache@v4
+        with:
+          path: arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf
+          key: ${{ steps.cachekeys.outputs.toolchain }}
+
+      - name: Install 64-bit toolchain (15.2.rel1)
+        run: |
+          if [ -d arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf/bin ]; then
+            echo "Toolchain restored from cache."
+          else
+            wget -q https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf.tar.xz
+            tar xf arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf.tar.xz
+          fi
+
+      - name: Cache Circle framework build
+        uses: actions/cache@v4
+        with:
+          path: libs/circle-stdlib
+          key: ${{ steps.cachekeys.outputs.circle }}
+
+      - name: Build microDX21 (unified)
+        run: |
+          export PATH=$(pwd)/arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf/bin:$PATH
+          export RPI=${{ matrix.rpi }}
+          bash build.sh
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel_rpi${{ matrix.rpi }}
+          path: out/kernel_rpi${{ matrix.rpi }}.img
+
+  build-pico:
+    name: Build Pico MIDI Adapter
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM embedded toolchain
+        run: sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Cache Pico SDK
+        uses: actions/cache@v4
+        with:
+          path: /tmp/pico-sdk
+          key: pico-sdk-2.1.1
+
+      - name: Clone Pico SDK
+        run: |
+          if [ ! -f /tmp/pico-sdk/pico_sdk_init.cmake ]; then
+            git clone --depth 1 --branch 2.1.1 https://github.com/raspberrypi/pico-sdk.git /tmp/pico-sdk
+            cd /tmp/pico-sdk && git submodule update --init --depth 1
+          fi
+
+      - name: Build Pico MIDI Adapter
+        run: |
+          export PICO_SDK_PATH=/tmp/pico-sdk
+          cd pico-midi-adapter
+          mkdir -p build && cd build
+          cmake ..
+          make -j$(nproc)
+
+      - name: Upload Pico artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-midi-adapter
+          path: pico-midi-adapter/build/pico_midi_adapter.uf2
+
+  release:
+    name: Create unified release
+    runs-on: ubuntu-22.04
+    needs: [build, build-pico]
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Compute Git Info
+        id: gitinfo
+        run: echo "git_info=$(date +%Y-%m-%d)-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Download all kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: kernels
+
+      - name: Download Pico MIDI Adapter artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pico-midi-adapter
+          path: pico-artifact
+
+      - name: Cache ARM toolchain
+        uses: actions/cache@v4
+        with:
+          path: arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf
+          key: toolchain-15.2.rel1
+
+      - name: Install 64-bit toolchain
+        run: |
+          if [ -d arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf/bin ]; then
+            echo "Toolchain restored from cache."
+          else
+            wget -q https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf.tar.xz
+            tar xf arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf.tar.xz
+          fi
+
+      - name: Build bootloader files once
+        run: |
+          set -ex
+          export PATH=$(pwd)/arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-elf/bin:$PATH
+          cd libs/circle-stdlib/libs/circle/boot
+          make clean
+          make
+          make armstub64
+
+      - name: Prepare unified SD card folder
+        run: |
+          set -ex
+          mkdir release
+
+          # Bootloader files (config.txt, cmdline.txt, armstub, etc.)
+          cp -r libs/circle-stdlib/libs/circle/boot/* release
+          rm -rf release/config*.txt release/README release/Makefile \
+                release/armstub release/COPYING.linux || true
+
+          # Overlays for RPi 5
+          mkdir -p release/overlays
+          if [ -f libs/circle-stdlib/libs/circle/boot/bcm2712d0.dtbo ]; then
+            cp libs/circle-stdlib/libs/circle/boot/bcm2712d0.dtbo release/overlays/bcm2712d0.dtbo
+          fi
+
+          # Configs
+          cp config/config.txt release/
+          cp config/cmdline.txt release/
+          cp config/microdx21.ini release/
+
+          # Kernel images
+          mkdir -p release/kernel_rpi3 release/kernel_rpi4 release/kernel_rpi5
+          cp kernels/kernel_rpi3/kernel_rpi3.img release/kernel_rpi3/
+          cp kernels/kernel_rpi4/kernel_rpi4.img release/kernel_rpi4/
+          cp kernels/kernel_rpi5/kernel_rpi5.img release/kernel_rpi5/
+
+          # Pico MIDI Adapter
+          mkdir -p release/pico-midi-adapter
+          cp pico-artifact/pico_midi_adapter.uf2 release/pico-midi-adapter/
+          if [ -f pico-midi-adapter/README ]; then
+            cp pico-midi-adapter/README release/pico-midi-adapter/README
+          fi
+
+          # Version
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "microDX21 ${{ inputs.version }}" > release/version.txt
+          else
+            echo "microDX21 (dev build)" > release/version.txt
+          fi
+          echo "Build: ${{ steps.gitinfo.outputs.git_info }}" >> release/version.txt
+
+      - name: Create combined ZIP
+        run: |
+          cd release
+          zip -r ../microDX21_AllRPi_${{ github.run_number }}.zip .
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: microDX21_AllRPi_${{ github.run_number }}
+          path: microDX21_AllRPi_${{ github.run_number }}.zip
+
+      - name: Upload to GitHub Releases
+        if: ${{ github.ref == 'refs/heads/main' && inputs.version != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: "microDX21 ${{ inputs.version }}"
+          prerelease: ${{ inputs.prerelease }}
+          body: |
+            microDX21 ${{ inputs.version }}
+
+            Build: ${{ steps.gitinfo.outputs.git_info }}
+            Targets: RPi 3, RPi 4, RPi 5
+
+            **Contents:** kernel images, bootloader files, config files, Pico MIDI Adapter UF2.
+          files: microDX21_AllRPi_${{ github.run_number }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

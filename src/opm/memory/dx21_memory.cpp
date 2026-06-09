@@ -171,7 +171,7 @@ bool CDX21Memory::jsonToPatch(const std::string& json, DX21_Patch& outPatch) con
     std::memset(&p, 0, sizeof(p));
 
     const char* s = json.c_str();
-    const char* e = s + json.size();
+    // const char* e = s + json.size();  // (unused: using std::strstr instead)
 
     // Parse name
     const char* namePtr = std::strstr(s, "\"name\"");
@@ -561,7 +561,7 @@ int CDX21Memory::importSysex(const uint8_t* data, size_t len) {
     if (byteCount != DX21_SYSEX_BULK_SIZE) return -1;
 
     // Checksum
-    if (len < 8 + 2 + byteCount + 1 + 1) return -1;
+    if (len < static_cast<size_t>(8 + 2 + byteCount + 1 + 1)) return -1;
     uint8_t checksum = 0;
     for (uint16_t i = 0; i < byteCount; ++i) {
         checksum += data[6 + i];

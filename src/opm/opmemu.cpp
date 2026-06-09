@@ -70,10 +70,6 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_memory(fs)
     , m_currentPatch(0)
     , m_sustainPedal(false)
-    , m_voiceAge(0)
-    , m_cycleAccum(0)
-    , m_staggerCount(0)
-    , m_pendingCount(0)
     , m_playMode(Single)
     , m_splitPoint(60)
     , m_balance(50)
@@ -93,7 +89,11 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_breathAmplitude(0)
     , m_breathEGBias(0)
     , m_breathEGDepth(0)
+    , m_voiceAge(0)
+    , m_cycleAccum(0)
+    , m_staggerCount(0)
     , m_sysexEditVoice(0)
+    , m_pendingCount(0)
 {
     for (int i = 0; i < kSysexNumParams; ++i) {
         m_sysexParam[i] = 0;
@@ -706,10 +706,20 @@ void COPMEmu::processMidiBuffer()
             m_sustainPedal = pedalOn;
         }
         else if (status == 0xB0 && ev.data1 == 1) {
-            // Modulation Wheel → LFO PMD (Pitch Modulation Depth)
-            // Map 0..127 → 0..99 (DX21 PMD range)
-            uint8_t pmd = static_cast<uint8_t>(ev.data2 * 99 / 127);
-            writeReg(0x19, (pmd & 0x7F) | 0x80);
+            // Modulation Wheel (CC#1). The DX21 B8 function
+            // (m_mwPitchRange, 0..99) sets the maximum depth of
+            // pitch modulation the wheel can apply; B9
+            // (m_mwAmpRange, 0..99) does the same for AMD. We
+            // scale the raw 0..127 CC#1 value by these ranges
+            // and write to the LFO's PMD/AMD register. When the
+            // range is 0 the wheel has no effect (the original
+            // DX21's "MW Pitch OFF" position).
+            int pmd = (ev.data2 * m_mwPitchRange) / 127;
+            int amd = (ev.data2 * m_mwAmpRange)   / 127;
+            // bit 7 of reg 0x19 = PMD, bits 0..6 = AMD
+            uint8_t reg = static_cast<uint8_t>(((pmd & 0x7F) << 7) | (amd & 0x7F));
+            writeReg(0x19, reg);
+            m_mwValue = ev.data2;
         }
         else if (status == 0xB0 && ev.data1 == 2) {
             // Breath Controller
@@ -1278,6 +1288,144 @@ void COPMEmu::setMasterGain(float gain)
 }
 
 // ===========================================================================
+// allNotesOff — Issue KeyOff to all 8 OPM channels. Each voice's release
+// phase will continue to ring out per its RR setting, but no new notes
+// can be triggered. Voice bookkeeping is reset so noteOn() will not
+// think any voice is "still playing" after the release is done.
+// ===========================================================================
+void COPMEmu::allNotesOff()
+{
+    // 1) Hardware: KeyOff on all 8 channels (reg 0x08, one byte per ch).
+    for (int ch = 0; ch < kNumVoices; ++ch) {
+        writeReg(0x08, static_cast<uint8_t>(ch));
+    }
+
+    // 2) Software: mark every voice as inactive and clear its
+    //    per-voice state. Skip the MIDI ring buffer — callers that
+    //    want to drop pending notes should call resetEngine() below.
+    for (int v = 0; v < kNumVoices; ++v) {
+        m_voices[v].active = false;
+        m_voices[v].sustained = false;
+        m_voices[v].note = -1;
+        m_voices[v].origNote = -1;
+        m_voices[v].velocity = 0;
+        m_voices[v].keyOnDelay = 0;
+        m_voices[v].currentPitch = 0.0f;
+        m_voices[v].targetPitch  = 0.0f;
+        m_voices[v].isPorting    = false;
+        m_voices[v].attackSamples = 0;
+    }
+}
+
+// ===========================================================================
+// resetEngine — Full audio-pipeline shutdown. Drops in-flight notes,
+// silences all OPM channels, and clears the MIDI ring buffer. Use this
+// from the panic path so a subsequent power-on starts from a clean
+// state (no stuck voices, no buffered NoteOns).
+// ===========================================================================
+// ===========================================================================
+// Init Voice — Set all 76 VCED bytes to the "Initialized Voice" factory
+// default and re-apply to the OPM. Comparable to the DX21's "Init. Voice ?"
+// function (A10 in the FUNCTION parameter list).
+//
+// The defaults are tuned to give a simple sine-like bell: a single carrier
+// with short decay, no modulation, no LFO. This is the canonical "empty
+// patch" a sound designer starts from when creating a new voice.
+// ===========================================================================
+const DX21_Patch* COPMEmu::GetInitVoicePatch() {
+    // Static const — initialised once at program start.
+    static const DX21_Patch kInitVoice = {
+        // alg, fb, lfo_speed, lfo_delay, pmd, amd, lfo_sync, lfo_wave
+        0, 0, 0, 0, 0, 0, 1, 0,
+        // pms, ams, key_offset
+        0, 0, 0,
+        // 4 operators, defaulting to a simple bell on OP1
+        {
+            // OP1 (carrier): ar, d1r, d2r, rr, d1l, ls, rs, ebs, ame, kvs, out, crs, det
+            { 31, 20, 0, 4, 0, 0, 0, 0, 0, 0, 99,  4, 3 },
+            // OP2..OP4 (modulators): muted
+            { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
+            { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
+            { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
+        },
+        "Init Voice"
+    };
+    return &kInitVoice;
+}
+
+void COPMEmu::initVoice() {
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+
+    DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return;
+
+    // Copy the static init patch into RAM and re-apply.
+    *ram = *GetInitVoicePatch();
+    applyPatchToVoice(voice, *ram);
+}
+
+// ===========================================================================
+// saveEditRecall — snapshot the current edit buffer into m_editRecall.
+// Called when the user first edits a parameter; subsequent edits
+// overwrite the buffer, but the first edit "freezes" the pre-edit
+// state. The DX21 actually only saves one snapshot per voice (no
+// multi-step undo); we follow suit.
+// ===========================================================================
+void COPMEmu::saveEditRecall() {
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+    DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return;
+    m_editRecall       = *ram;
+    m_bEditRecallValid = true;
+}
+
+// ===========================================================================
+// loadEditRecall — restore the snapshot and re-apply to the OPM.
+// Only valid if saveEditRecall() was called at least once.
+// ===========================================================================
+void COPMEmu::loadEditRecall() {
+    if (!m_bEditRecallValid) return;
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+    DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return;
+    *ram = m_editRecall;
+    applyPatchToVoice(voice, *ram);
+}
+
+void COPMEmu::resetEngine()
+{
+    allNotesOff();
+
+    // 3) Force every operator's TL to maximum attenuation (127) so
+    //    the OPM outputs silence even during the release phase.
+    //    bit 7 of reg 0x60 is OPP TL-ramp enable — keep it set so
+    //    the change is click-free.
+    for (int ch = 0; ch < kNumVoices; ++ch) {
+        for (int op = 0; op < 4; ++op) {
+            int slot = ch + OP_SLOT[op];
+            writeReg(0x60 + slot, 0x80 | 127);
+        }
+    }
+
+    // 4) Drop any pending MIDI events so a re-start doesn't see
+    //    NoteOns that were queued before the panic.
+    m_midiWritePos.store(0, std::memory_order_release);
+    m_midiReadPos.store(0,  std::memory_order_release);
+
+    // 5) Zero the deferred SysEx queue (real-time param changes
+    //    that haven't been applied yet). The opmemu.h struct doesn't
+    //    expose the bulk-dump drain/fill counters, so we only clear
+    //    the dirty flags here — applySysexChanges() won't reapply
+    //    anything until a new SysEx arrives.
+    for (int i = 0; i < kSysexNumParams; ++i) {
+        m_sysexDirty[i] = false;
+    }
+}
+
+// ===========================================================================
 // setPitchBend — apply global pitch bend to all active voices
 // MIDI pitch bend: 0..16383, center = 8192
 // ===========================================================================
@@ -1553,7 +1701,7 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
     if (size < 7) return;
     if (data[0] != 0xF0 || data[1] != 0x43) return;
 
-    uint8_t deviceAndModel = data[2];  // 0n where n = device number
+    // uint8_t deviceAndModel = data[2];  // 0n where n = device number (currently unused)
     uint8_t modelId = data[3];
 
     // DX21 Parameter Change: F0 43 0n 12 pp vv F7
@@ -1741,6 +1889,176 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
     }
 }
 
+// ===========================================================================
+// writeVcedGlobal — Write global voice parameters (algorithm, feedback, LFO, etc.)
+// Maps DX21 VCED parameter indices to OPM registers.
+// Called from COPMEmuAdapter when parameter sliders change.
+// ===========================================================================
+void COPMEmu::writeVcedGlobal(int param, uint8_t value)
+{
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+
+    DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
+    if (!ramPatch) return;
+
+    switch (param) {
+        case 0: // Algorithm (0-7)
+            ramPatch->alg = value & 0x07;
+            writeField(0x20 + voice, 0, 3, ramPatch->alg);
+            break;
+        case 1: // Feedback (0-7)
+            ramPatch->fb = value & 0x07;
+            writeField(0x20 + voice, 3, 3, ramPatch->fb);
+            break;
+        case 6: // LFO Speed (0-255)
+            ramPatch->lfo_speed = value;
+            writeReg(0x18, ramPatch->lfo_speed);
+            break;
+        case 7: // LFO Delay (0-127)
+            ramPatch->lfo_delay = value & 0x7F;
+            // Note: LFO delay is not a direct OPM register, stored in patch only
+            break;
+        case 8: // PMD (Pitch Mod Depth, 0-127)
+            ramPatch->pmd = value & 0x7F;
+            writeReg(0x19, (ramPatch->pmd & 0x7F) | 0x80);
+            break;
+        case 9: // AMD (Amplitude Mod Depth, 0-127)
+            ramPatch->amd = value & 0x7F;
+            writeReg(0x19, ramPatch->amd & 0x7F);
+            break;
+        case 10: // LFO Sync (0 or 1)
+            ramPatch->lfo_sync = value & 0x01;
+            // Note: LFO sync is not directly programmable on YM2151, internal behavior
+            break;
+        case 11: // LFO Waveform (0-3: tri, saw, square, s/h)
+            ramPatch->lfo_wave = value & 0x03;
+            writeField(0x1B, 0, 2, ramPatch->lfo_wave);
+            break;
+        case 12: // PMS (Pitch Mod Sensitivity, 0-7) + AMS (Amp Mod Sens, 0-3)
+            // VCED byte 8 is packed: (pms << 4) | ams. We re-use the
+            // high nibble (pms) and stash ams in the low nibble of a
+            // synthetic local; for the adapter we route them as two
+            // separate 0..1 params so the user can pick one at a time.
+            // In practice: pms uses the upper 4 bits of the byte, ams
+            // the lower 2 bits. We mirror that here so a future bulk
+            // dump round-trips.
+            ramPatch->pms = (value >> 4) & 0x07;
+            ramPatch->ams = value & 0x03;
+            {
+                uint8_t pms_ams = (ramPatch->pms << 4) | (ramPatch->ams & 0x03);
+                writeReg(0x38 + voice, pms_ams);
+            }
+            break;
+        case 13: // Key Offset / Transpose (0-48, offset 24 → -24..+24 semitones)
+            // Stored as int8_t in the patch. The adapter will pass
+            // 0..1 normalised, and we map to 0..48 with +24 centre.
+            ramPatch->key_offset = (int8_t)((int)value - 24);
+            break;
+        default:
+            break;
+    }
+}
+
+// ===========================================================================
+// writeVcedOperator — Write per-operator parameters (AR, D1R, D1L, OUT, CRS)
+// Maps DX21 VCED parameter indices to OPM registers.
+// Called from COPMEmuAdapter when per-op sliders change.
+// ===========================================================================
+void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
+{
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= kNumVoices) return;
+    if (op < 0 || op >= 4) return;
+
+    DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
+    if (!ramPatch) return;
+
+    DX21_Operator& o = ramPatch->op[op];
+    int slot = voice + OP_SLOT[op];
+
+    switch (param) {
+        case 0: // AR (Attack Rate, 0-31)
+            o.ar = value & 0x1F;
+            writeField(0x80 + slot, 0, 5, o.ar);
+            break;
+        case 2: // D1R (Decay1 Rate, 0-31)
+            o.d1r = value & 0x1F;
+            writeField(0xA0 + slot, 0, 5, o.d1r);
+            break;
+        case 8: // D1L (Decay1 Level, 0-15)
+            o.d1l = value & 0x0F;
+            {
+                uint8_t d1l = 15 - (o.d1l & 0x0F);
+                uint8_t rr = o.rr & 0x0F;
+                uint8_t d1l_rr = (d1l << 4) | rr;
+                writeReg(0xE0 + slot, d1l_rr);
+            }
+            break;
+        case 10: // OUT (Output Level, 0-99)
+            o.out = value;
+            {
+                uint8_t tl = (99 - o.out) * 127 / 99;
+                if (tl > 127) tl = 127;
+                writeReg(0x60 + slot, 0x80 | (tl & 0x7F));
+            }
+            break;
+        case 11: // CRS (Coarse Ratio, 0-63)
+            o.crs = value & 0x3F;
+            {
+                uint8_t mul = CRS_TO_MUL[o.crs & 0x3F];
+                writeField(0x40 + slot, 0, 4, mul);
+            }
+            break;
+        case 1: // D2R (Decay 2 Rate, 0-31) -- register 0xC0[4:0]
+            o.d2r = value & 0x1F;
+            writeField(0xC0 + slot, 0, 5, o.d2r);
+            break;
+        case 3: // RR (Release Rate, 0-15) -- packed in 0xE0[3:0]
+            o.rr = value & 0x0F;
+            {
+                uint8_t d1l = 15 - (o.d1l & 0x0F);
+                uint8_t d1l_rr = (d1l << 4) | o.rr;
+                writeReg(0xE0 + slot, d1l_rr);
+            }
+            break;
+        case 5: // LS (Level Scaling, 0-99) -- no direct OPM reg, applied per-note
+            o.ls = value;
+            if (o.ls > 99) o.ls = 99;
+            break;
+        case 6: // RS (Rate Scaling, 0-3) -- packed in 0x80[7:6] with AR
+            o.rs = value & 0x03;
+            {
+                uint8_t ks_ar = ((o.rs & 0x03) << 6) | (o.ar & 0x1F);
+                writeReg(0x80 + slot, ks_ar);
+            }
+            break;
+        case 7: // EBS (EG Bias Sensitivity, 0-7) -- no direct OPM reg
+            o.ebs = value & 0x07;
+            break;
+        case 13: // AME (AM Enable, 0/1) -- bit 7 of 0xA0
+            o.ame = value & 0x01;
+            {
+                uint8_t ame_d1r = ((o.ame & 0x01) << 7) | (o.d1r & 0x1F);
+                writeReg(0xA0 + slot, ame_d1r);
+            }
+            break;
+        case 9: // KVS (Key Velocity Sensitivity, 0-7) -- no direct OPM reg
+            o.kvs = value & 0x07;
+            break;
+        case 12: // DET (Detune, 0-6: 0=-3,1=-2,2=-1,3=0,4=+1,5=+2,6=+3)
+            o.det = value & 0x07;
+            {
+                uint8_t dt1 = (o.det <= 6) ? DET_TO_DT1[o.det] : 0;
+                uint8_t mul = (o.crs < 64) ? CRS_TO_MUL[o.crs] : 15;
+                uint8_t dt1_mul = (dt1 << 4) | (mul & 0x0F);
+                writeReg(0x40 + slot, dt1_mul);
+            }
+            break;
+        default:
+            break;
+    }
+}
 
 // ===========================================================================
 // setSysexEditVoice — select which voice slot receives real-time parameter changes

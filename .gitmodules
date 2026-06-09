@@ -1,0 +1,4 @@
+[submodule "libs/circle-stdlib"]
+	path = libs/circle-stdlib
+	url = https://github.com/smuehlst/circle-stdlib.git
+	branch = master
