@@ -126,6 +126,20 @@ public:
         return false;
     }
 
+    // Get the current pitch of voice i in semitones (or 0.0f if voice
+    // is inactive or out-of-range). Useful for unit tests and external
+    // visualizers that show the current pitch state.
+    float getVoicePitch(int voice) const {
+        if (voice < 0 || voice >= kNumVoices) return 0.0f;
+        if (!m_voices[voice].active) return 0.0f;
+        return m_voices[voice].currentPitch;
+    }
+    // True if voice i is currently gliding (isPorting state)
+    bool isVoicePorting(int voice) const {
+        if (voice < 0 || voice >= kNumVoices) return false;
+        return m_voices[voice].isPorting;
+    }
+
     int  getNumPrograms();
     int  getCurrentProgram();
     const char* getCurrentProgramName();
@@ -336,7 +350,7 @@ private:
     enum PortaMode { PortaOff, PortaFullTime, PortaFingered };
     PortaMode m_portaMode;
     int       m_portaRate;  // 0..99
-    float     m_portaRateFactor; // derived from rate (0.0 .. 1.0)
+    float     m_portaDecayFactor; // per-sample decay multiplier (0.0..1.0)
 
     // --- PB Mode (Low / High / K-on) ---
     enum PBMode { PBAll, PBLow, PBHigh, PBKOn };
@@ -419,8 +433,8 @@ private:
     // --- Pitch / Portamento ---
     void applyPitchToVoice(int voice);         // write KC/KF with PB+porta+tune+breath
     void completeKeyOn(int voice);             // delayed KeyOn: KC/KF + TL + KeyOn
-    void updatePortamento();                    // called from processBlock
-    float computePortaRateFactor(int rate) const;
+    void updatePortamento(int numSamples);                    // called from processBlock
+    float computePortaDecayFactor(int rate) const;
     void writeFrequency(int voice, float pitchSemitones, bool keyOn = false);
     int  findVoiceForPB() const;               // find target voice per PBMode
     void handleBreath(int value);              // MIDI CC#2 handler

@@ -46,4 +46,10 @@ add_executable(test_velocity_curve tests/test_velocity_curve.cpp)
 target_include_directories(test_velocity_curve PRIVATE src)
 target_link_libraries(test_velocity_curve opmemu)
 add_test(NAME velocity_curve COMMAND test_velocity_curve)
+
+add_executable(test_portamento tests/test_portamento.cpp)
+target_include_directories(test_portamento PRIVATE src)
+target_link_libraries(test_portamento opmemu)
+add_test(NAME portamento COMMAND test_portamento)
+
 add_test(NAME voice_stealing COMMAND test_voice_stealing)

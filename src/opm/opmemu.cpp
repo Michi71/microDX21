@@ -97,7 +97,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_pbRange(2)
     , m_portaMode(PortaOff)
     , m_portaRate(0)
-    , m_portaRateFactor(0.0f)
+    , m_portaDecayFactor(0.0f)
     , m_pbMode(PBAll)
     , m_breathValue(0)
     , m_breathPitchBias(0)
@@ -825,7 +825,7 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
     // DAC-Samples an den bestehenden Pending-Puffer an. Getragene Daten
     // aus dem vorherigen processBlock-Aufruf werden zuerst konsumiert.
     processMidiBuffer();
-    updatePortamento();
+    updatePortamento(numSamples);
 
     // Process pending KeyOns: countdown and send when delay expires.
     // This gives the TL ramp time to reach near-max attenuation before
@@ -1181,6 +1181,12 @@ int COPMEmu::voiceStart(Side side) const
 
 int COPMEmu::voiceCount(Side side) const
 {
+    // In MONO mode, the synth plays at most one note at a time.
+    // We reflect this in voiceCount so that allocVoice's free-the-
+    // single-slot path triggers correctly (it requires count == 1).
+    if (m_mono && m_playMode == Single && side == SideA) {
+        return 1;
+    }
     switch (m_playMode) {
     case Single:
         return (side == SideA) ? 8 : 0;
@@ -1285,22 +1291,46 @@ void COPMEmu::setMasterTune(int cents)
 
 
 // ===========================================================================
-// computePortaRateFactor — map DX21 rate (0..99) to per-sample increment
-// ===========================================================================
-float COPMEmu::computePortaRateFactor(int rate) const
+// computePortaDecayFactor — map DX21 rate (0..99) to per-sample decay
+// multiplier for exponential portamento.
+//
+// The real DX21's portamento slide is approximately exponential in
+// time (per the owner's manual: "the relationship is exponential, not
+// linear"). With rate=99, a one-octave slide takes about 15 seconds.
+//
+// We model this as an exponential decay of the pitch gap:
+//
+//   gap(n+1) = gap(n) × decay_per_sample
+//   new_pitch = target - new_gap
+//
+// where decay_per_sample is a value just below 1.0 (closer to 1.0 = slower
+// slide). With this scheme, the gap halves every "T_half" seconds,
+// where T_half = -ln(0.5) / ln(decay_per_sample) / sample_rate.
+//
+// Mapping rate 0..99 to T_half:
+//   rate = 0   → T_half = 0    (no portamento, instant snap)
+//   rate = 99  → T_half ≈ 2.5s (one octave ≈ 5x half-life ≈ 12.5s)
+//
+// The relationship rate → T_half is linear so that low rates (1..30)
+// feel snappier and high rates (70..99) feel smoother, which matches
+// what a player expects from a "portamento time" knob.
+float COPMEmu::computePortaDecayFactor(int rate) const
 {
     if (rate <= 0) return 0.0f;
-    // DX21 portamento rate 99 = ~15 semitones/sec at 48kHz
-    // Rate factor = rate / (99 * sampleRate / targetSpeed)
-    // Empirically: rate 99 → factor ~0.0005 per sample
-    return static_cast<float>(rate) * 0.00000505f;
+
+    // Linear mapping: rate 1 → T_half=0.025s, rate 99 → T_half=2.5s.
+    const float t_half_max = 2.5f;  // seconds at rate=99
+    const float t_half     = (rate / 99.0f) * t_half_max;
+
+    // decay_per_sample = 0.5 ^ (1 / (T_half * sample_rate))
+    return std::pow(0.5f, 1.0f / (t_half * (float)kSampleRate));
 }
 
 // ===========================================================================
 // updatePortamento — interpolate pitch and write KC/KF for porting voices
 // Called from processBlock (audio thread) after MIDI processing.
 // ===========================================================================
-void COPMEmu::updatePortamento()
+void COPMEmu::updatePortamento(int numSamples)
 {
     if (m_portaMode == PortaOff) return;
 
@@ -1315,12 +1345,19 @@ void COPMEmu::updatePortamento()
             continue;
         }
 
-        // Move currentPitch towards targetPitch
-        float step = delta * m_portaRateFactor;
-        // Clamp step to avoid overshooting
-        if (std::abs(step) > std::abs(delta)) step = delta;
-
-        m_voices[v].currentPitch += step;
+        // Exponential decay of the gap, applied per-block (updatePortamento
+        // is called once per processBlock, not per sample).
+        //
+        // The per-sample decay factor is m_portaDecayFactor. For a
+        // block of N samples, the effective per-block decay is:
+        //   effective = m_portaDecayFactor ^ N
+        // which we compute via std::pow to avoid overflow / drift.
+        //
+        // This makes the glide speed independent of the audio buffer
+        // size: pumping 256 samples at a time vs 64 samples at a time
+        // produces the same overall glide curve.
+        float effectiveDecay = std::pow(m_portaDecayFactor, (float)numSamples);
+        m_voices[v].currentPitch = m_voices[v].targetPitch - (delta * effectiveDecay);
         applyPitchToVoice(v);
     }
 }
@@ -1515,7 +1552,7 @@ void COPMEmu::setPortamentoMode(int mode)
     PortaMode oldMode = m_portaMode;
     m_portaMode = static_cast<PortaMode>(mode);
     if (oldMode == PortaOff && m_portaMode != PortaOff) {
-        m_portaRateFactor = computePortaRateFactor(m_portaRate);
+        m_portaDecayFactor = computePortaDecayFactor(m_portaRate);
     }
 }
 
@@ -1527,7 +1564,7 @@ void COPMEmu::setPortamentoRate(int rate)
     if (rate < 0) rate = 0;
     if (rate > 99) rate = 99;
     m_portaRate = rate;
-    m_portaRateFactor = computePortaRateFactor(rate);
+    m_portaDecayFactor = computePortaDecayFactor(rate);
 }
 
 
@@ -1671,7 +1708,7 @@ void COPMEmu::applyPerformance(int perfSlot)
     m_pbMode = static_cast<PBMode>(perf->pbMode);
     m_portaMode = static_cast<PortaMode>(perf->portaMode);
     m_portaRate = perf->portaRate;
-    m_portaRateFactor = computePortaRateFactor(m_portaRate);
+    m_portaDecayFactor = computePortaDecayFactor(m_portaRate);
     m_masterTune = perf->transpose;  // Using transpose as master tune for now
     // breath params
     m_breathPitchBias = perf->breathPitch;
