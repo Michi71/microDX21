@@ -59,12 +59,6 @@ void CConfig::Load()
     // VelocityCurve: 0=Linear 1=Soft 2=Hard 3=DX21 4=Softest.
     // Also accept named strings: linear, soft, hard, dx21, softest.
     std::string velCurve = m_Properties.GetString("VelocityCurve", "linear");
-    auto trim = [](std::string& s) {
-        while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t'))
-            s.pop_back();
-        while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
-            s.erase(0, 1);
-    };
     trim(velCurve);
     for (auto& c : velCurve) c = static_cast<char>(::tolower(c));
     if      (velCurve == "linear")  m_nVelocityCurve = 0;
