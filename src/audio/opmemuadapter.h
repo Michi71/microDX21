@@ -160,8 +160,29 @@ enum DX21ParamIndex {
     kParamTransmitCh,       // 0..15 (A5: 0=off, 1..15=ch)
     kParamDualDetune,       // 0..99 (A2: DUAL-mode side-B detune)
 
+    // MIDI receive routing + foot controller + breath pitch. 88..92.
+    // Appended at the end so the existing indices stay stable.
+    kParamMidiSwitch,       // 0/1 (FUNCTION #3: master MIDI receive)
+    kParamReceiveCh,        // 0..16 (FUNCTION #6/#7: 0=Omni, 1..16=ch)
+    kParamFootVolume,       // 0/1 (FUNCTION #30: CC#4 → output level)
+    kParamFootSustain,      // 0/1 (FUNCTION #31: CC#64 enable)
+    kParamBreathPitch,      // 0..99 (FUNCTION #35: BC → LFO PMD range)
+
     kParamTotalCount
 };
+
+// The EDIT-mode operator select (CDX21Display::ResolveEditParam) relies
+// on the per-operator blocks being laid out at fixed strides: 5
+// consecutive core params per op, 8 consecutive extended params per op.
+// Keep these asserts in sync if the enum is ever reordered.
+static_assert(kParamOp1AR  == kParamOp0AR  + 5 &&
+              kParamOp2AR  == kParamOp0AR  + 10 &&
+              kParamOp3AR  == kParamOp0AR  + 15,
+              "per-op core param stride must be 5");
+static_assert(kParamOp1D2R == kParamOp0D2R + 8 &&
+              kParamOp2D2R == kParamOp0D2R + 16 &&
+              kParamOp3D2R == kParamOp0D2R + 24,
+              "per-op extended param stride must be 8");
 
 // ──────────────────────────────────────────────────────────────────
 // COPMEmuAdapter — bridges COPMEmu (DX21 FM synth) to the
@@ -200,6 +221,12 @@ public:
 
         m_synth->Initialize();
 
+        // If the kernel registered the SysEx-out callback before init(),
+        // forward it now that the engine exists.
+        if (m_sysexOutFn) {
+            m_synth->setSysexOutCallback(m_sysexOutFn, m_sysexOutUser);
+        }
+
         CLogger::Get()->Write("COPMEmuAdapter", LogNotice, "Init: COPMEmu initialized, %d programs",
                                m_synth->getNumPrograms());
         return true;
@@ -212,9 +239,12 @@ public:
 
     void setSysexOutCallback(void (*fn)(void*, const uint8_t*, size_t), void* user)
     {
-        // TODO: COPMEmu doesn't have SysEx out callback yet; store for future use
+        // Stored locally for the UI-triggered dumps (TriggerBulkTransmit /
+        // TriggerVoiceTransmit) and forwarded into COPMEmu so the engine
+        // can answer Yamaha dump requests (F0 43 2n ff F7) on its own.
         m_sysexOutFn = fn;
         m_sysexOutUser = user;
+        if (m_synth) m_synth->setSysexOutCallback(fn, user);
     }
 
     // --- Memory Protect (Function #23) ---
@@ -455,6 +485,13 @@ public:
             case kParamTransmitCh:     m_synth->setMidiTransmitChannel((int)(value * 15.99f)); break;
             case kParamDualDetune:     m_synth->setDualDetune((int)(value * 99.0f)); break;
 
+            // MIDI receive routing + foot controller + breath pitch.
+            case kParamMidiSwitch:     m_synth->setMidiSwitchOn(value > 0.5f); break;
+            case kParamReceiveCh:      m_synth->setMidiReceiveChannel((int)(value * 16.99f)); break;
+            case kParamFootVolume:     m_synth->setFootVolumeOn(value > 0.5f); break;
+            case kParamFootSustain:    m_synth->setFootSustainOn(value > 0.5f); break;
+            case kParamBreathPitch:    m_synth->setBreathPitch((int)(value * 99.0f)); break;
+
             default:
                 break;
         }
@@ -588,6 +625,13 @@ public:
             case kParamTransmitCh:    return (float)m_synth->getMidiTransmitChannel() / 15.0f;
             case kParamDualDetune:    return (float)m_synth->getDualDetune() / 99.0f;
 
+            // MIDI receive routing + foot controller + breath pitch.
+            case kParamMidiSwitch:    return m_synth->getMidiSwitchOn()  ? 1.0f : 0.0f;
+            case kParamReceiveCh:     return (float)m_synth->getMidiReceiveChannel() / 16.0f;
+            case kParamFootVolume:    return m_synth->getFootVolumeOn()  ? 1.0f : 0.0f;
+            case kParamFootSustain:   return m_synth->getFootSustainOn() ? 1.0f : 0.0f;
+            case kParamBreathPitch:   return (float)m_synth->getBreathPitch() / 99.0f;
+
             // Global LFO modulation sensitivity.
             case kParamPMS: {
                 const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
@@ -656,6 +700,9 @@ public:
             "MW Pitch", "MW Amp",
             // MIDI routing (84-87)
             "CH Info", "Sys Info", "Transmit Ch", "Dual Detune",
+            // Receive routing + foot + breath pitch (88-92)
+            "MIDI Switch", "Receive Ch", "Foot Volume", "Foot Sustain",
+            "BC Pitch",
         };
         if (index < 0 || index >= kParamTotalCount) return "?";
         return kNames[index];
@@ -854,6 +901,16 @@ public:
         if (!m_synth || !m_sysexOutFn) return false;
         std::vector<uint8_t> data;
         if (!m_synth->memory().exportSysex(data)) return false;
+        m_sysexOutFn(m_sysexOutUser, data.data(), data.size());
+        return true;
+    }
+
+    // Trigger a 1-voice VCED dump of the current program. Same out
+    // path as the bulk dump. Returns true on success.
+    bool TriggerVoiceTransmit() {
+        if (!m_synth || !m_sysexOutFn) return false;
+        std::vector<uint8_t> data;
+        if (!m_synth->exportCurrentVoiceSysex(data)) return false;
         m_sysexOutFn(m_sysexOutUser, data.data(), data.size());
         return true;
     }

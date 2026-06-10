@@ -110,9 +110,11 @@ out/kernel_rpi3.img: data   # gültiges Pi 3 / Zero 2 W 64-bit Image
 - `CDX21Display::SelectParam(±1)` — pure UI cursor move through the per-mode list. Wraps. No synth write.
 - `CDX21Display::AdjustValue(±1)` — writes through `COPMEmuAdapter::setParameter()`:
   - PLAY / PERFORMANCE → `kParamInstrument` (program change)
-  - EDIT → `kEditToAdapter[m_ParamIdx]` (raw VCED byte via `writeVcedGlobal/Operator`)
+  - EDIT → `ResolveEditParam(kEditToAdapter[m_ParamIdx], m_EditOp)` (raw VCED byte via `writeVcedGlobal/Operator`; per-op entries target the operator selected by `m_EditOp`)
   - FUNCTION → `kFunctionToAdapter[m_ParamIdx]`
   - MEMORY → no-op (tape dialogs are non-numeric)
   Returns the new value (or -1 for un-bound entries).
+- **Triple-click in EDIT mode** cycles `m_EditOp` (OP1 → OP2 → OP3 → OP4). Per-operator EDIT entries (EG, OUT, FREQ, DET, RS, LS, EBS, KVS, AME) follow the selected operator; the EDIT title row shows `OPn`. The OP strides in the `DX21ParamIndex` enum (5 core / 8 extended per op) are guarded by `static_assert`s in `opmemuadapter.h`.
+- **SysEx out**: the kernel's `ForwardMIDI` is registered as SysEx-out callback on adapter AND engine. The engine answers Yamaha dump requests (`F0 43 2n 03/09 F7`, gated on FUNCTION #5 "Midi Sy Info"); FUNCTION #41 "Midi Transmit ?" triggers the 32-voice bulk via `TriggerBulkTransmit()`. Single-voice dumps round-trip through `CDX21Memory::exportVoiceSysex/importVoiceSysex` (76-byte VCED, edit slot = `m_sysexEditVoice`, Memory Protect enforced).
 - `CDX21Input::m_bBrowse` — true (default) means rotation navigates the list; false means rotation edits the current param's value. Toggled by the first tick of `EventSwitchHold`. The second hold-tick (≈2 s) still toggles MEMORY PROTECT. Initialise the constructor with `m_bBrowse(true)` so a freshly-cycled mode starts in browse.
 - Both `SelectParam` and `AdjustValue` are called from the CKY040 ISR dispatch path; they only touch adapter get/set (which are safe to call from the main thread / display side) and update display members. Never call them from the audio callback.

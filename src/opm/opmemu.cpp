@@ -739,6 +739,9 @@ void COPMEmu::processMidiBuffer()
             noteOff(ev.data1);
         }
         else if (status == 0xB0 && ev.data1 == 64) {
+            // FUNCTION #31 "Foot Sustain": when OFF, the sustain
+            // pedal is ignored entirely.
+            if (!m_footSustainOn) continue;
             bool pedalOn = (ev.data2 >= 64);
             if (m_sustainPedal && !pedalOn) {
                 for (int v = 0; v < kNumVoices; ++v) {
@@ -755,21 +758,22 @@ void COPMEmu::processMidiBuffer()
             // Modulation Wheel (CC#1). The DX21 B8 function
             // (m_mwPitchRange, 0..99) sets the maximum depth of
             // pitch modulation the wheel can apply; B9
-            // (m_mwAmpRange, 0..99) does the same for AMD. We
-            // scale the raw 0..127 CC#1 value by these ranges
-            // and write to the LFO's PMD/AMD register. When the
-            // range is 0 the wheel has no effect (the original
-            // DX21's "MW Pitch OFF" position).
-            int pmd = (ev.data2 * m_mwPitchRange) / 127;
-            int amd = (ev.data2 * m_mwAmpRange)   / 127;
-            // bit 7 of reg 0x19 = PMD, bits 0..6 = AMD
-            uint8_t reg = static_cast<uint8_t>(((pmd & 0x7F) << 7) | (amd & 0x7F));
-            writeReg(0x19, reg);
+            // (m_mwAmpRange, 0..99) does the same for AMD.
+            // MW and BC contributions are summed in
+            // updateLFOModDepth(), like the original firmware.
             m_mwValue = ev.data2;
+            updateLFOModDepth();
         }
         else if (status == 0xB0 && ev.data1 == 2) {
             // Breath Controller
             handleBreath(ev.data2);
+        }
+        else if (status == 0xB0 && ev.data1 == 4) {
+            // Foot Controller (CC#4). FUNCTION #30 "Foot Volume":
+            // when ON, the pedal scales the stereo output level.
+            if (m_footVolumeOn) {
+                m_footVolume = ev.data2;
+            }
         }
         else if (status == 0xE0) {
             // Pitch Bend: 14-bit value (data2 MSB, data1 LSB)
@@ -872,8 +876,14 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
 
         float rawL = static_cast<float>(sumL) / cycles * kScale;
         float rawR = static_cast<float>(sumR) / cycles * kScale;
-        outputL[i] = rawL * m_masterGain;
-        outputR[i] = rawR * m_masterGain;
+        // FUNCTION #30 "Foot Volume": CC#4 scales the output level.
+        // m_footVolume is 127 (unity) unless the feature is enabled
+        // and a pedal value has been received. Plain int read — the
+        // MIDI consumer (processMidiBuffer) runs on this same audio
+        // thread, so there is no race.
+        const float footGain = static_cast<float>(m_footVolume) / 127.0f;
+        outputL[i] = rawL * m_masterGain * footGain;
+        outputR[i] = rawR * m_masterGain * footGain;
     }
 
     // --- Clip Detection ---
@@ -1630,6 +1640,12 @@ void COPMEmu::handleBreath(int value)
     if (value > 127) value = 127;
     m_breathValue = value;
 
+    // FUNCTION #35 "BC Pitch": breath modulates the LFO pitch depth
+    // (PMD), summed with the mod wheel's contribution.
+    if (m_breathPitch > 0) {
+        updateLFOModDepth();
+    }
+
     // Apply breath pitch bias to active voices
     if (m_breathPitchBias > 0) {
         for (int v = 0; v < kNumVoices; ++v) {
@@ -1638,6 +1654,29 @@ void COPMEmu::handleBreath(int value)
             }
         }
     }
+}
+
+// ===========================================================================
+// updateLFOModDepth — write MW+BC modulation depth to YM2151 reg 0x19
+//
+// MW (CC#1) and BC (CC#2) both scale the LFO depth; their contributions
+// are summed and clamped to 127, like the original DX21 firmware.
+//
+// Note on reg 0x19: bit 7 selects the target — 1 = PMD (bits 0..6),
+// 0 = AMD (bits 0..6) — so PMD and AMD need TWO separate writes. The
+// previous single-write version (((pmd & 0x7F) << 7) | amd) overflowed
+// the uint8_t and silently dropped the PMD value.
+// ===========================================================================
+void COPMEmu::updateLFOModDepth()
+{
+    int pmd = (m_mwValue * m_mwPitchRange) / 127
+            + (m_breathValue * m_breathPitch) / 127;
+    int amd = (m_mwValue * m_mwAmpRange) / 127;
+    if (pmd > 127) pmd = 127;
+    if (amd > 127) amd = 127;
+
+    writeReg(0x19, static_cast<uint8_t>(0x80 | (pmd & 0x7F)));
+    writeReg(0x19, static_cast<uint8_t>(amd & 0x7F));
 }
 
 // ===========================================================================
@@ -1652,6 +1691,13 @@ void COPMEmu::setPBMode(int mode)
 // ===========================================================================
 // Breath Controller Parameter Setters
 // ===========================================================================
+void COPMEmu::setBreathPitch(int value)
+{
+    if (value < 0) value = 0;
+    if (value > 99) value = 99;
+    m_breathPitch = value;
+}
+
 void COPMEmu::setBreathPitchBias(int value)
 {
     if (value < 0) value = 0;
@@ -1785,11 +1831,47 @@ const DX21_Patch* COPMEmu::getPatch(int index) const
 // ===========================================================================
 void COPMEmu::handleSysex(const uint8_t* data, int size)
 {
-    if (size < 7) return;
+    if (size < 5) return;
     if (data[0] != 0xF0 || data[1] != 0x43) return;
 
-    // uint8_t deviceAndModel = data[2];  // 0n where n = device number (currently unused)
+    // data[2] = sn: s = sub-status (0 = voice/param data, 2 = dump
+    // request), n = device number (ignored — we answer on any device).
+    uint8_t subStatus = data[2] & 0x70;
+
+    // Yamaha Dump Request: F0 43 2n ff F7. The DX21 answers with the
+    // matching dump when FUNCTION #5 "Midi Sy Info" is ON. ff = 0x03
+    // requests the current voice (1-voice VCED), ff = 0x09 the
+    // 32-voice bulk. The reply goes out through the SysEx-out
+    // callback on the MIDI/main thread — never the audio callback,
+    // so the std::vector heap use here is fine.
+    if (subStatus == 0x20) {
+        if (data[size - 1] != 0xF7) return;
+        if (!m_sysexInfoOn || !m_sysexOutFn) return;
+        uint8_t format = data[3];
+        std::vector<uint8_t> reply;
+        if (format == 0x03) {
+            if (!exportCurrentVoiceSysex(reply)) return;
+        } else if (format == 0x09) {
+            if (!m_memory.exportSysex(reply)) return;
+        } else {
+            return;
+        }
+        m_sysexOutFn(m_sysexOutUser, reply.data(), reply.size());
+        return;
+    }
+
+    if (size < 7) return;
     uint8_t modelId = data[3];
+
+    // DX21 1-voice VCED dump: F0 43 0n 03 ... F7. Received into the
+    // current edit slot (m_sysexEditVoice) in RAM — the same slot the
+    // real-time parameter change (0x12) targets. Memory Protect is
+    // enforced inside importVoiceSysex. The next key-on picks up the
+    // new data (setupVoice reads the RAM patch per note).
+    if (modelId == 0x03) {
+        m_memory.importVoiceSysex(data, (size_t)size, m_sysexEditVoice);
+        return;
+    }
 
     // DX21 Parameter Change: F0 43 0n 12 pp vv F7
     if (modelId == 0x12 && size == 7 && data[6] == 0xF7) {
@@ -1817,6 +1899,17 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
         (void)imported;
         return;
     }
+}
+
+// ===========================================================================
+// exportCurrentVoiceSysex — build a 1-voice VCED dump of the current program
+// Called from the MIDI/main thread (dump-request reply, UI voice transmit).
+// ===========================================================================
+bool COPMEmu::exportCurrentVoiceSysex(std::vector<uint8_t>& out)
+{
+    const DX21_Patch* p = getPatch(getCurrentProgram());
+    if (!p) return false;
+    return m_memory.exportVoiceSysex(*p, out);
 }
 
 // ===========================================================================

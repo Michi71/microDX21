@@ -79,11 +79,27 @@ static const int kEditToAdapter[] = {
 static_assert(sizeof(kEditToAdapter)/sizeof(kEditToAdapter[0]) == EDIT_PARAM_COUNT,
               "kEditToAdapter must match EDIT_PARAM_COUNT");
 
-// Same for OP-cycles 1-3 (OP2/OP3/OP4). We only map OP1 above because
-// the EDIT_PARAM_NAMES list shows OP1 (carrier 1) EG params; cycling
-// through the OP block would require duplicating the 4 OP blocks in
-// kParamXxx (we'd index kParamOp1AR..kParamOp3Out for the others).
-// For now, only OP1 is live; the other ops are tagged "n/a".
+// The table above maps the per-operator entries to OP1 (kParamOp0*).
+// The DX21ParamIndex enum lays the other operators out at fixed
+// strides behind OP1 — 5 consecutive core params per op
+// (kParamOp0AR..kParamOp0CRS), then 8 consecutive extended params
+// per op (kParamOp0D2R..kParamOp0DET) — so OP2..OP4 are a constant
+// offset away. ResolveEditParam() applies that offset for the
+// operator currently selected via CDX21Display::m_EditOp (cycled by
+// triple-click in EDIT mode). Non-per-op entries pass through.
+static int ResolveEditParam(int kp, int op) {
+    if (op <= 0 || kp < 0) return kp;
+    if (kp >= kParamOp0AR  && kp <= kParamOp0CRS) return kp + op * 5;
+    if (kp >= kParamOp0D2R && kp <= kParamOp0DET) return kp + op * 8;
+    return kp;
+}
+
+// True if this EDIT entry targets a per-operator parameter (used by
+// the renderer to decide whether to show the OP indicator).
+static bool IsPerOpEditParam(int kp) {
+    return (kp >= kParamOp0AR  && kp <= kParamOp0CRS) ||
+           (kp >= kParamOp0D2R && kp <= kParamOp0DET);
+}
 
 // ────────────────────────────────────────────────────────────────────
 // FUNCTION-mode parameter mapping (46 items, in display order)
@@ -97,12 +113,12 @@ static_assert(sizeof(kEditToAdapter)/sizeof(kEditToAdapter[0]) == EDIT_PARAM_COU
 static const int kFunctionToAdapter[] = {
     /*  0  FUNCTION CONTROL   */  -1,    // header
     /*  1  Master Tune =      */  kParamMasterTune,    // -64..+63
-    /*  2  Dual Detune        */  -1,                  // not implemented yet
-    /*  3  Midi Switch :      */  -1,                  // per-channel
+    /*  2  Dual Detune        */  kParamDualDetune,    // 0..99 (DUAL side B)
+    /*  3  Midi Switch :      */  kParamMidiSwitch,    // master MIDI receive
     /*  4  Midi Ch Info:      */  kParamCHInfo,
     /*  5  Midi Sy Info:      */  kParamSysInfo,
-    /*  6  Midi Recv Ch =     */  -1,                  // per-channel
-    /*  7  Midi Omni : ON     */  -1,                  // per-channel
+    /*  6  Midi Recv Ch =     */  kParamReceiveCh,     // 0=Omni, 1..16
+    /*  7  Midi Omni : ON     */  kParamReceiveCh,     // same state: Omni = ch 0
     /*  8  Recall Edit ?      */  -1,                  // dialog
     /*  9  Are You Sure ?     */  -1,                  // dialog
     /* 10  Init. Voice ?      */  -1,                  // dialog
@@ -125,17 +141,17 @@ static const int kFunctionToAdapter[] = {
     /* 27  Fingered Porta     */  kParamPortamentoMode,
     /* 28  Full Time Porta    */  kParamPortamentoMode,
     /* 29  Porta Time         */  kParamPortamentoRate,
-    /* 30  Foot Volume        */  -1,                  // no setter
-    /* 31  Foot Sustain:      */  -1,
+    /* 30  Foot Volume        */  kParamFootVolume,    // CC#4 enable
+    /* 31  Foot Sustain:      */  kParamFootSustain,   // CC#64 enable
     /* 32  Foot Porta  :      */  kParamPortamentoMode,
-    /* 33  MW Pitch           */  -1,                  // mod wheel
-    /* 34  MW Amplitude       */  -1,
-    /* 35  BC Pitch           */  -1,                  // breath routing
+    /* 33  MW Pitch           */  kParamMWPitchRange,  // 0..99 (B8)
+    /* 34  MW Amplitude       */  kParamMWAmpRange,    // 0..99 (B9)
+    /* 35  BC Pitch           */  kParamBreathPitch,   // 0..99 (B10)
     /* 36  BC Amplitude       */  kParamBreathAmp,
     /* 37  BC Pitch Bias      */  kParamBreathPitchBias,
     /* 38  BC EG Bias         */  kParamBreathEGBias,
     /* 39  Middle C =         */  kParamKeyOffset,     // closest analog
-    /* 40  Midi Trns Ch =     */  -1,                  // per-channel
+    /* 40  Midi Trns Ch =     */  kParamTransmitCh,    // 0=off, 1..15
     /* 41  Midi Transmit ?    */  -1,
     /* 42  Chorus      :      */  kParamEnsemble,
     /* 43  Bend Mode =        */  kParamPBMode,
@@ -365,10 +381,10 @@ void CDX21Display::DrawBigString(int x, int y, const char* s) {
 
 // Read a 0..255 raw value for a given EDIT_PARAM_NAMES index.
 // Returns -1 if the param has no live getter.
-static int ReadEditValue(COPMEmuAdapter* a, int paramIdx) {
+static int ReadEditValue(COPMEmuAdapter* a, int paramIdx, int editOp) {
     if (!a) return -1;
     if (paramIdx < 0 || paramIdx >= EDIT_PARAM_COUNT) return -1;
-    int kp = kEditToAdapter[paramIdx];
+    int kp = ResolveEditParam(kEditToAdapter[paramIdx], editOp);
     if (kp < 0) return -1;
     float v = a->getParameter(kp);
     // Scale to 0..255. Each param has its own natural range; the
@@ -451,13 +467,26 @@ void CDX21Display::RenderPlayMode() {
 void CDX21Display::RenderEditMode() {
     char line[32];
 
-    // Page 0: "EDIT  N/36"
-    snprintf(line, sizeof(line), "%-9s %2d/%-2d     ",
-             MODE_TITLE_EDIT, m_ParamIdx + 1, EDIT_PARAM_COUNT);
+    // Current entry's adapter binding (OP-resolved) — used for the
+    // OP indicator and the page-3 display string.
+    const int safeIdx = (m_ParamIdx >= 0 && m_ParamIdx < EDIT_PARAM_COUNT)
+        ? m_ParamIdx : 0;
+    const int kpRaw = kEditToAdapter[safeIdx];
+
+    // Page 0: "EDIT  N/36" — with "OPn" indicator when the current
+    // entry is a per-operator parameter (triple-click cycles n).
+    if (IsPerOpEditParam(kpRaw)) {
+        snprintf(line, sizeof(line), "%-5s OP%d %2d/%-2d  ",
+                 MODE_TITLE_EDIT, m_EditOp + 1, m_ParamIdx + 1,
+                 EDIT_PARAM_COUNT);
+    } else {
+        snprintf(line, sizeof(line), "%-9s %2d/%-2d     ",
+                 MODE_TITLE_EDIT, m_ParamIdx + 1, EDIT_PARAM_COUNT);
+    }
     DrawText6x8(0, 0, line, 16);
 
     // Page 1: big 3-digit value (read from adapter, or fallback to m_Value)
-    int value = ReadEditValue(m_pAdapter, m_ParamIdx);
+    int value = ReadEditValue(m_pAdapter, m_ParamIdx, m_EditOp);
     if (value < 0) value = m_Value;
     DrawBigNumber(0, 8, value, 3);
 
@@ -476,8 +505,7 @@ void CDX21Display::RenderEditMode() {
         // Show the adapter-side display string if available.
         if (m_pAdapter) {
             std::string s = m_pAdapter->getParameterDisplay(
-                kEditToAdapter[m_ParamIdx >= 0 && m_ParamIdx < EDIT_PARAM_COUNT
-                                ? m_ParamIdx : 0]);
+                ResolveEditParam(kpRaw, m_EditOp));
             snprintf(line, sizeof(line), "%-16.16s", s.c_str());
         } else {
             line[0] = '\0';
@@ -748,7 +776,7 @@ int CDX21Display::AdjustValue(int delta) {
 
         case kModeEdit:
             if (m_ParamIdx < 0 || m_ParamIdx >= EDIT_PARAM_COUNT) return -1;
-            kp = kEditToAdapter[m_ParamIdx];
+            kp = ResolveEditParam(kEditToAdapter[m_ParamIdx], m_EditOp);
             break;
 
         case kModeFunction:

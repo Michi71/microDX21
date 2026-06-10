@@ -57,4 +57,9 @@ target_include_directories(test_memory_protect PRIVATE src)
 target_link_libraries(test_memory_protect opmemu)
 add_test(NAME memory_protect COMMAND test_memory_protect)
 
+add_executable(test_sysex_dump tests/test_sysex_dump.cpp)
+target_include_directories(test_sysex_dump PRIVATE src)
+target_link_libraries(test_sysex_dump opmemu)
+add_test(NAME sysex_dump COMMAND test_sysex_dump)
+
 add_test(NAME voice_stealing COMMAND test_voice_stealing)

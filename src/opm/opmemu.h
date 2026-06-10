@@ -262,6 +262,54 @@ public:
     int  getMidiTransmitChannel() const { return m_midiTransmitCh; }
     int  getDualDetune() const       { return m_dualDetune; }
 
+    // MIDI Switch (FUNCTION #3) and Receive Channel / Omni
+    // (FUNCTION #6/#7). The channel filter itself is enforced by
+    // CMicroDX21::ShouldAcceptChannel(), which consults these
+    // getters — the engine only holds the state so that FUNCTION-
+    // mode edits and config land in one place. 0 = Omni, 1..16 =
+    // fixed receive channel.
+    void setMidiSwitchOn(bool on)      { m_midiSwitchOn = on; }
+    bool getMidiSwitchOn() const       { return m_midiSwitchOn; }
+    void setMidiReceiveChannel(int ch) {
+        if (ch < 0)  ch = 0;
+        if (ch > 16) ch = 16;
+        m_midiRecvCh = ch;
+    }
+    int  getMidiReceiveChannel() const { return m_midiRecvCh; }
+
+    // Foot controller routing (FUNCTION #30/#31). When Foot Volume
+    // is ON, MIDI CC#4 scales the stereo output (0..127 → 0..1).
+    // Disabling it snaps the level back to full so a half-pressed
+    // pedal can't mute the synth permanently. When Foot Sustain is
+    // OFF, CC#64 is ignored.
+    void setFootVolumeOn(bool on) {
+        m_footVolumeOn = on;
+        if (!on) m_footVolume = 127;
+    }
+    bool getFootVolumeOn() const  { return m_footVolumeOn; }
+    void setFootSustainOn(bool on){ m_footSustainOn = on; }
+    bool getFootSustainOn() const { return m_footSustainOn; }
+
+    // ───────────────────────────────────────────────
+    // SysEx out (dump transmit)
+    // ───────────────────────────────────────────────
+    //
+    // The callback is invoked with complete F0..F7 frames from the
+    // MIDI/main thread (never from the audio callback). It is used
+    // for: (a) answering Yamaha dump requests (F0 43 2n ff F7),
+    // (b) the FUNCTION "Midi Transmit ?" bulk dump. Transmission is
+    // gated on FUNCTION #5 "Midi Sy Info" (m_sysexInfoOn), matching
+    // the original DX21 firmware.
+    typedef void (*SysexOutFn)(void* user, const uint8_t* data, size_t len);
+    void setSysexOutCallback(SysexOutFn fn, void* user) {
+        m_sysexOutFn   = fn;
+        m_sysexOutUser = user;
+    }
+
+    // Build a 1-voice VCED dump (F0 43 0n 03 ...) of the currently
+    // selected program. Returns false if the patch is unavailable.
+    bool exportCurrentVoiceSysex(std::vector<uint8_t>& out);
+
     // Constants for the A10 Init Voice (factory defaults).
     // Defined in opmemu.cpp as a static const DX21_Patch.
     static const DX21_Patch* GetInitVoicePatch();
@@ -294,10 +342,12 @@ public:
     int  getPBMode() const { return (int)m_pbMode; }
 
     // --- Breath Controller ---
+    void setBreathPitch(int value);      // 0..99 (FUNCTION #35: BC→LFO PMD range)
     void setBreathPitchBias(int value);  // 0..99
     void setBreathAmplitude(int value);  // 0..99
     void setBreathEGBias(int value);     // 0..99
     void setBreathEGDepth(int value);    // 0..99
+    int  getBreathPitch() const { return m_breathPitch; }
     int  getBreathPitchBias() const { return m_breathPitchBias; }
     int  getBreathAmplitude() const { return m_breathAmplitude; }
     int  getBreathEGBias() const { return m_breathEGBias; }
@@ -378,26 +428,44 @@ private:
     bool m_memoryProt;
 
     // --- Modulation Wheel (CC#1) + Breath (CC#2) ---
-    int m_mwValue;           // 0..127 (MIDI CC#1)
-    int m_mwPitchRange;      // 0..99 (B8: MW→LFO PMD scale)
-    int m_mwAmpRange;        // 0..99 (B9: MW→LFO AMD scale)
-    int m_breathValue;       // 0..127 (MIDI CC#2)
-    int m_breathPitchBias;   // 0..99  (B12)
-    int m_breathAmplitude;   // 0..99  (B11)
-    int m_breathEGBias;      // 0..99  (B13)
-    int m_breathEGDepth;     // 0..99
+    // Inline initializers: these were previously left uninitialized
+    // (no constructor-init-list entry), which made the MW/Breath
+    // response and the MIDI-settings defaults depend on stack/heap
+    // garbage. Defaults follow the DX21 factory settings.
+    int m_mwValue = 0;           // 0..127 (MIDI CC#1)
+    int m_mwPitchRange = 50;     // 0..99 (B8: MW→LFO PMD scale)
+    int m_mwAmpRange = 0;        // 0..99 (B9: MW→LFO AMD scale)
+    int m_breathValue = 0;       // 0..127 (MIDI CC#2)
+    int m_breathPitch = 0;       // 0..99  (B10: BC→LFO PMD scale)
+    int m_breathPitchBias = 0;   // 0..99  (B12)
+    int m_breathAmplitude = 0;   // 0..99  (B11)
+    int m_breathEGBias = 0;      // 0..99  (B13)
+    int m_breathEGDepth = 0;     // 0..99
 
     // --- Function-mode MIDI settings ---
-    bool m_chInfoOn;         // A6: Channel Information ON/OFF
-    bool m_sysexInfoOn;      // A7: System (SysEx) Information ON/OFF
-    int  m_midiTransmitCh;   // A5: 0..15 (0 = off, 1..15 = ch)
-    int  m_dualDetune;       // A2: 0..99 (DUAL-mode side-B detune)
+    bool m_chInfoOn = true;      // A6: Channel Information ON/OFF
+    bool m_sysexInfoOn = true;   // A7: System (SysEx) Information ON/OFF
+    int  m_midiTransmitCh = 0;   // A5: 0..15 (0 = off, 1..15 = ch)
+    int  m_dualDetune = 0;       // A2: 0..99 (DUAL-mode side-B detune)
+
+    // --- MIDI receive routing (FUNCTION #3/#6/#7) ---
+    bool m_midiSwitchOn = true;  // FUNCTION #3: master MIDI receive switch
+    int  m_midiRecvCh = 0;       // FUNCTION #6/#7: 0 = Omni, 1..16
+
+    // --- Foot controller (FUNCTION #30/#31) ---
+    bool m_footVolumeOn = true;  // CC#4 → output level enable
+    bool m_footSustainOn = true; // CC#64 → sustain enable
+    int  m_footVolume = 127;     // last CC#4 value (127 = full)
+
+    // --- SysEx out callback (dump transmit) ---
+    SysexOutFn m_sysexOutFn = nullptr;
+    void*      m_sysexOutUser = nullptr;
 
     // --- Edit-Recall buffer (A9) ---
     // A 2nd copy of the current edit buffer that A9 "Recall Edit ?"
     // swaps in. The synth keeps this in RAM only — never persisted.
     DX21_Patch m_editRecall;
-    bool       m_bEditRecallValid;
+    bool       m_bEditRecallValid = false;
     uint32_t m_voiceAge;
     uint32_t m_cycleAccum;  // fractional cycle accumulator for pitch accuracy
     int      m_staggerCount;  // remaining staggered noteOns to process
@@ -459,6 +527,7 @@ private:
     void writeFrequency(int voice, float pitchSemitones, bool keyOn = false);
     int  findVoiceForPB() const;               // find target voice per PBMode
     void handleBreath(int value);              // MIDI CC#2 handler
+    void updateLFOModDepth();                  // MW+BC → reg 0x19 PMD/AMD
 
     void writeReg(uint8_t reg, uint8_t val);
     void writeField(uint8_t addr, unsigned ls_bit, unsigned bits, uint8_t data);

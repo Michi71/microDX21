@@ -245,9 +245,23 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
             break;
         }
 
+        case CKY040::EventSwitchTripleClick: {
+            // Triple-click in EDIT mode: cycle the target operator
+            // (OP1 → OP2 → OP3 → OP4 → OP1) for the per-operator
+            // parameters (EG, OUT, FREQ, DET, RS, LS, EBS, KVS,
+            // AME). Replaces the OP-select button row of the
+            // original DX21 front panel. Other modes ignore it.
+            if (m_pDisplay->GetMode() == DX21UI::kModeEdit) {
+                int op = m_pDisplay->CycleEditOp();
+                char msg[24];
+                snprintf(msg, sizeof(msg), "EDIT OP%d", op + 1);
+                m_pDisplay->SetStatus(msg);  // SetStatus copies
+            }
+            break;
+        }
+
         case CKY040::EventSwitchUp:
         case CKY040::EventSwitchDown:
-        case CKY040::EventSwitchTripleClick:
         case CKY040::EventUnknown:
         default:
             break;

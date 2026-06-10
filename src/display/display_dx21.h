@@ -35,6 +35,7 @@
 #include <circle/gpiopin.h>
 #include <circle/types.h>
 #include <circle/timer.h>
+#include <string.h>   // strncpy in SetStatus()
 
 #include "../opm/dx21_ui_strings.h"
 #include "../opm/dx21_ui_7seg.h"
@@ -167,8 +168,39 @@ public:
     void SetVoiceNumber(int n)              { m_VoiceNum = n; MarkDirty(); }
     int  GetVoiceNumber() const             { return m_VoiceNum; }
 
-    void SetStatus(const char* s)           { m_Status = s; MarkDirty(); }
+    // SetStatus COPIES the string into a fixed internal buffer (no
+    // heap). Callers may pass stack-local buffers — the previous
+    // pointer-only version dangled when the input ISR handed in a
+    // local snprintf buffer that the display thread read later.
+    void SetStatus(const char* s) {
+        if (s) {
+            strncpy(m_StatusBuf, s, sizeof(m_StatusBuf) - 1);
+            m_StatusBuf[sizeof(m_StatusBuf) - 1] = '\0';
+            m_Status = m_StatusBuf;
+        } else {
+            m_Status = nullptr;
+        }
+        MarkDirty();
+    }
     void ClearStatus()                      { m_Status = nullptr; MarkDirty(); }
+
+    // ───────────────────────────────────────────────
+    // EDIT-mode operator select (OP1..OP4)
+    // ───────────────────────────────────────────────
+    //
+    // The per-operator EDIT entries (EG rates, OUT, FREQ, DET, RS,
+    // LS, EBS, KVS, AME) target the operator selected here (0..3 →
+    // OP1..OP4). Non-per-op entries ignore it. Cycled by the
+    // triple-click gesture in EDIT mode (see dx21_input.cpp); shown
+    // in the EDIT title row. Mirrors the OP-select button row of
+    // the original DX21 front panel.
+    int  GetEditOp() const                  { return m_EditOp; }
+    void SetEditOp(int op)                  { m_EditOp = op & 3; MarkDirty(); }
+    int  CycleEditOp() {
+        m_EditOp = (m_EditOp + 1) & 3;
+        MarkDirty();
+        return m_EditOp;
+    }
 
     // Boot-time splash overlay. When set, Render() ignores m_Mode
     // and shows the boot logo. Cleared by SetSplash(false) when the
@@ -300,6 +332,13 @@ private:
     int          m_MemoryGroup;     // 0..15 (display 1..16)
     int          m_MemoryResult;    // -1=none, else 0=OK or error code
     unsigned     m_MemoryResultMs;  // wall-time when result was set
+
+    // EDIT-mode operator select: 0..3 → OP1..OP4. See GetEditOp().
+    int          m_EditOp = 0;
+
+    // Backing store for SetStatus() — m_Status points here (or is
+    // nullptr). 16 visible chars + NUL fits the status line.
+    char         m_StatusBuf[24] = {0};
 
     u8           m_PageBuf[128];
 };

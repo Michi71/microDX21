@@ -9,6 +9,63 @@ All notable changes to microDX21, in reverse chronological order.
 > Synth engine, Memory Protect, Build, Fixed, and Test coverage
 > sub-sections further down describe the **post-0.1.0** work.
 
+### Added (post-0.1.0, June 2026 gap-closing pass)
+- **OP2–4 editing in EDIT mode**: triple-click on the encoder cycles
+  the target operator (OP1 → OP2 → OP3 → OP4); the per-operator EDIT
+  entries (EG AR/D1R/D1L/D2R/RR, OUT, FREQ, DET, RS, LS, EBS, KVS,
+  AME) now write to the selected operator instead of always OP1.
+  `ResolveEditParam()` maps the OP1 binding to the other ops via the
+  fixed enum strides (5 core / 8 extended params per op), guarded by
+  `static_assert`s in `opmemuadapter.h`. The EDIT title row shows
+  `EDIT OPn` whenever the current entry is per-operator.
+- **SysEx dump out (transmit)**:
+  - `COPMEmu::setSysexOutCallback()` — the engine can now send SysEx;
+    the adapter forwards the kernel's `ForwardMIDI` callback into it
+    (this resolves the old "no SysEx out callback yet" TODO).
+  - **Yamaha dump requests** (`F0 43 2n ff F7`) are answered when
+    FUNCTION #5 "Midi Sy Info" is ON: `ff = 0x03` → 1-voice VCED dump
+    of the current program, `ff = 0x09` → 32-voice bulk dump. Editors
+    and librarians can now pull patches from the synth.
+  - **1-voice VCED dump (modelId 0x03)**: new
+    `CDX21Memory::exportVoiceSysex()` / `importVoiceSysex()` (76-byte
+    VCED, same framing/checksum as the bulk dump). Incoming 1-voice
+    dumps land in the edit slot (`m_sysexEditVoice`); Memory Protect
+    is enforced. `COPMEmuAdapter::TriggerVoiceTransmit()` sends the
+    current voice on demand.
+  - `tests/test_sysex_dump.cpp` — 8 scenarios: voice round-trip,
+    checksum rejection, Memory Protect, both dump requests, Sy-Info
+    gating, edit-slot receive, Foot-Sustain gating.
+- **FUNCTION-mode bindings completed** (`kFunctionToAdapter` now has
+  22 live bindings, was 12): Dual Detune (#2), Midi Switch (#3),
+  Midi Recv Ch (#6) + Omni (#7, same state: Omni = ch 0), Foot
+  Volume (#30), Foot Sustain (#31), MW Pitch (#33), MW Amplitude
+  (#34), BC Pitch (#35), Midi Trns Ch (#40). New engine state:
+  - `m_midiSwitchOn` / `m_midiRecvCh` — `CMicroDX21::
+    ShouldAcceptChannel()` now consults the engine (single source of
+    truth; config and `setMidiSetting(kMidiChannel)` mirror into it).
+    Midi Switch OFF mutes all channel-voice reception.
+  - `m_footVolumeOn` / `m_footSustainOn` — CC#4 scales the stereo
+    output (snaps back to full when disabled); CC#64 is ignored when
+    Foot Sustain is OFF.
+  - `m_breathPitch` (BC Pitch, 0..99) — breath now modulates the LFO
+    PMD, summed with the mod wheel in the new `updateLFOModDepth()`.
+
+### Fixed (post-0.1.0, June 2026 gap-closing pass)
+- **YM2151 reg 0x19 PMD write**: the mod-wheel handler packed PMD and
+  AMD into one byte (`((pmd & 0x7F) << 7) | amd`), which overflows
+  uint8_t and silently drops the PMD value. PMD (bit 7 set) and AMD
+  (bit 7 clear) are now written as two separate writes.
+- **`CDX21Display::SetStatus()` dangling pointer**: the encoder ISR
+  passed stack-local snprintf buffers whose lifetime ended before the
+  display thread rendered them. SetStatus now copies into a fixed
+  internal buffer (no heap).
+- **Uninitialized engine members**: `m_mwValue`, `m_mwPitchRange`,
+  `m_mwAmpRange`, `m_chInfoOn`, `m_sysexInfoOn`, `m_midiTransmitCh`,
+  `m_dualDetune`, `m_bEditRecallValid` had neither constructor-init-
+  list entries nor inline initializers. All engine state now has
+  deterministic defaults (DX21 factory-style: MW Pitch 50, Ch/Sy
+  Info ON).
+
 ### Removed
 - **USB-MIDI Gadget mode**: dropped the in-kernel `CUSBMIDIGadget` branch that let the synth Pi appear as a USB-MIDI device to a host. The synth Pi is now USB-Host-only. USB-MIDI Gadget is handled by an external RP2350 "Comms" processor (pico-midi-adapter) that bridges USB-MIDI to UART RX/TX on GPIO 14/15. See `pico-midi-adapter/README` for the wiring.
   - `CKernel::m_pUSBGadget` member and constructor/destructor removed (`src/kernel.h`, `src/kernel.cpp`).

@@ -665,3 +665,63 @@ bool CDX21Memory::exportSysex(std::vector<uint8_t>& out) const {
 
     return true;
 }
+
+bool CDX21Memory::exportVoiceSysex(const DX21_Patch& patch,
+                                   std::vector<uint8_t>& out) const {
+    out.clear();
+    out.reserve(8 + DX21_SYSEX_VCED_SIZE);
+
+    out.push_back(0xF0);
+    out.push_back(0x43);
+    out.push_back(0x00);  // Device number 0
+    out.push_back(0x03);  // 1-voice VCED dump
+
+    // Byte count: MSB first (same 7-bit split as the bulk dump)
+    out.push_back(static_cast<uint8_t>(DX21_SYSEX_VCED_SIZE >> 7));
+    out.push_back(static_cast<uint8_t>(DX21_SYSEX_VCED_SIZE & 0x7F));
+
+    uint8_t vced[DX21_SYSEX_VCED_SIZE];
+    if (!patchToVced(patch, vced)) {
+        out.clear();
+        return false;
+    }
+    out.insert(out.end(), vced, vced + DX21_SYSEX_VCED_SIZE);
+
+    uint8_t checksum = 0;
+    for (size_t i = 6; i < out.size(); ++i) {
+        checksum += out[i];
+    }
+    checksum &= 0x7F;
+    out.push_back(checksum);
+    out.push_back(0xF7);
+
+    return true;
+}
+
+bool CDX21Memory::importVoiceSysex(const uint8_t* data, size_t len, int slot) {
+    if (!data || slot < 0 || slot >= kNumRamVoices) return false;
+
+    // F0 43 0n 03 cntHi cntLo <76 bytes> cs F7 = 6 + 76 + 2 = 84 bytes
+    if (len < 6 + DX21_SYSEX_VCED_SIZE + 2) return false;
+    if (data[0] != 0xF0 || data[1] != 0x43) return false;
+    if (data[3] != 0x03) return false;
+
+    uint16_t byteCount = (static_cast<uint16_t>(data[4]) << 7) | data[5];
+    if (byteCount != DX21_SYSEX_VCED_SIZE) return false;
+
+    uint8_t checksum = 0;
+    for (uint16_t i = 0; i < byteCount; ++i) {
+        checksum += data[6 + i];
+    }
+    checksum &= 0x7F;
+    if (data[6 + byteCount] != checksum) return false;
+
+    // FUNCTION #23 (Memory Protect): a 1-voice dump is a write to the
+    // edit slot in RAM. Reject when protected — same policy as the
+    // real-time parameter change and the bulk dump.
+    if (m_memoryProt) return false;
+
+    if (!vcedToPatch(data + 6, m_ram[slot])) return false;
+    m_ramValid[slot] = true;
+    return true;
+}

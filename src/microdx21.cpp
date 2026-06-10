@@ -140,6 +140,12 @@ bool CMicroDX21::Initialize()
             m_MidiChannel == 0 ? "Omni"
                                : (std::to_string(m_MidiChannel)).c_str());
 
+    // Push the config value into the engine — at runtime the engine is
+    // the single source of truth (FUNCTION #6 "Midi Recv Ch" edits it
+    // through the adapter; ShouldAcceptChannel() consults it).
+    if (COPMEmu* pSynth = m_piano.raw())
+        pSynth->setMidiReceiveChannel(m_MidiChannel);
+
     // Velocity curve from config (0=Linear 1=Soft 2=Hard 3=DX21 4=Softest)
     m_VelocityCurve = (int)m_pConfig->GetVelocityCurve();
     if (m_VelocityCurve < 0 || m_VelocityCurve > 4)
@@ -404,8 +410,24 @@ void CMicroDX21::SendMidiCmd(uint8_t cmd, uint8_t data1, uint8_t data2)
 
 // Channel filter — consulted by CMicroDX21MIDIDevice::HandleMIDI before
 // dispatching channel-voice messages to the synth engine.  See header.
+//
+// The engine (COPMEmu) is the runtime source of truth: FUNCTION #3
+// "Midi Switch" and FUNCTION #6/#7 "Midi Recv Ch"/"Omni" edit its
+// state through the adapter. m_MidiChannel (from config) only serves
+// as a fallback until the engine is constructed.
 bool CMicroDX21::ShouldAcceptChannel(u8 channel0Based) const
 {
+    COPMEmu* pSynth = const_cast<COPMEmuAdapter&>(m_piano).raw();
+    if (pSynth)
+    {
+        if (!pSynth->getMidiSwitchOn())
+            return false;                               // FUNCTION #3: MIDI off
+        int ch = pSynth->getMidiReceiveChannel();
+        if (ch <= 0)
+            return true;                                // Omni
+        return ((unsigned)ch - 1) == (unsigned)channel0Based;
+    }
+
     if (m_MidiChannel <= 0)
         return true;                                    // Omni
     return ((unsigned)m_MidiChannel - 1) == (unsigned)channel0Based;
@@ -658,8 +680,12 @@ void CMicroDX21::setMidiSetting(int id, int value)
     switch (id)
     {
         case kMidiChannel:
-            // 0 = Omni, 1..16 = specific channel
+            // 0 = Omni, 1..16 = specific channel. Mirror into the
+            // engine — ShouldAcceptChannel() consults the engine
+            // state (same path as FUNCTION #6 "Midi Recv Ch").
             m_MidiChannel = std::clamp(value, 0, 16);
+            if (COPMEmu* pSynth = m_piano.raw())
+                pSynth->setMidiReceiveChannel(m_MidiChannel);
             break;
 
         case kMidiVelocityCurve:

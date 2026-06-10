@@ -38,7 +38,8 @@ struct DX21_Performance {
 // ===========================================================================
 // DX21 SysEx Constants
 // ===========================================================================
-static constexpr uint32_t DX21_SYSEX_BULK_SIZE = 32 * 76; // 2432 bytes
+static constexpr uint32_t DX21_SYSEX_VCED_SIZE = 76;      // one voice record
+static constexpr uint32_t DX21_SYSEX_BULK_SIZE = 32 * DX21_SYSEX_VCED_SIZE; // 2432 bytes
 static constexpr uint8_t  DX21_SYSEX_HEADER[] = {0xF0, 0x43};
 
 // ===========================================================================
@@ -93,6 +94,17 @@ public:
     // Export all 32 RAM voices as a DX21-compatible 32-voice VCED bulk dump.
     // Output includes F0..F7 framing. Returns true on success.
     bool exportSysex(std::vector<uint8_t>& out) const;
+
+    // Export a single voice as a 1-voice VCED dump
+    // (F0 43 0n 03 <count> <76-byte VCED> <checksum> F7).
+    // The patch does not have to live in this memory — the caller can
+    // pass the edit buffer or a ROM patch. Returns true on success.
+    bool exportVoiceSysex(const DX21_Patch& patch, std::vector<uint8_t>& out) const;
+
+    // Import a 1-voice VCED dump (modelId 0x03) into RAM slot `slot`
+    // (0..31). Validates framing, byte count and checksum. Honours
+    // Memory Protect. Returns true if the voice was stored.
+    bool importVoiceSysex(const uint8_t* data, size_t len, int slot);
 
     // --- Init from ROM patches ---
     // Copy the first 32 ROM patches into RAM for factory defaults.
