@@ -9,14 +9,10 @@
 #include "dx21_input.h"
 #include "display_dx21.h"
 #include "opm/dx21_ui_strings.h"
+#include "audio/opmemuadapter.h"   // full type: we call pA->setMemoryProtect()
 #include <cstdio>
 #include <circle/logger.h>
 #include <circle/timer.h>
-
-// Forward decl: the display only forward-declares COPMEmuAdapter in its
-// header. We use the public setMemoryProtect() on it (declared in
-// opmemuadapter.h) to forward the hold-tick #2 into the synth.
-class COPMEmuAdapter;
 
 using namespace DX21UI;
 
