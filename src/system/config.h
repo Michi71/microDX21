@@ -47,6 +47,8 @@ public:
     bool        GetMIDIThruEnabled() const;
     // 0 = Omni (accept all channels), 1..16 = specific channel
     unsigned    GetMIDIChannel() const;
+    // 0=Linear 1=Soft 2=Hard 3=DX21 4=Softest
+    unsigned    GetVelocityCurve() const;
 
     // ───────────────────────────────────────────────
     // MASTER VOLUME
@@ -74,7 +76,8 @@ private:
     // MIDI
     unsigned    m_nMIDIBaudRate;
     bool        m_bMIDIThruEnabled;
-    unsigned    m_nMIDIChannel;       // 0 = Omni, 1..16 = specific
+    unsigned    m_nMIDIChannel;
+    unsigned    m_nVelocityCurve;       // 0 = Omni, 1..16 = specific
 
     // Master Volume
     unsigned    m_nMasterVolume;

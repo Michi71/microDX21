@@ -39,5 +39,11 @@ target_link_libraries(alg_prober opmemu)
 # Voice-stealing unit test. No SDL/PortMidi needed.
 enable_testing()
 add_executable(test_voice_stealing tests/test_voice_stealing.cpp)
+target_include_directories(test_voice_stealing PRIVATE src)
 target_link_libraries(test_voice_stealing opmemu)
+
+add_executable(test_velocity_curve tests/test_velocity_curve.cpp)
+target_include_directories(test_velocity_curve PRIVATE src)
+target_link_libraries(test_velocity_curve opmemu)
+add_test(NAME velocity_curve COMMAND test_velocity_curve)
 add_test(NAME voice_stealing COMMAND test_voice_stealing)

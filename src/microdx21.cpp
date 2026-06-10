@@ -23,6 +23,7 @@
 #include "opm/io/fatfs_filesystem.h"
 #include <string.h>
 #include <math.h>
+#include "microdx21/velocitycurve.h"
 
 LOGMODULE("microdx21");
 
@@ -138,6 +139,18 @@ bool CMicroDX21::Initialize()
     LOGNOTE("MIDI channel filter: %s",
             m_MidiChannel == 0 ? "Omni"
                                : (std::to_string(m_MidiChannel)).c_str());
+
+    // Velocity curve from config (0=Linear 1=Soft 2=Hard 3=DX21 4=Softest)
+    m_VelocityCurve = (int)m_pConfig->GetVelocityCurve();
+    if (m_VelocityCurve < 0 || m_VelocityCurve > 4)
+        m_VelocityCurve = 0;
+    static const char* velCurveNames[] = { "Linear", "Soft", "Hard", "DX21", "Softest" };
+    LOGNOTE("Velocity curve: %s (p=%.1f)",
+            velCurveNames[m_VelocityCurve],
+            m_VelocityCurve == 0 ? 1.0f :
+            m_VelocityCurve == 1 ? 1.3f :
+            m_VelocityCurve == 2 ? 0.7f :
+            m_VelocityCurve == 3 ? 1.5f : 2.0f);
 
     // ───────────────────────────────────────────────
     // MIDI DEVICES
@@ -364,8 +377,14 @@ void CMicroDX21::ProcessDeferredWork()
 
 void CMicroDX21::NoteOn(int32_t note, int32_t velocity)
 {
+    // Apply the user-selected velocity curve BEFORE passing to the
+    // synth. The curve reshapes the MIDI velocity (0..127) using a
+    // power function so that low-velocity notes can be made much
+    // softer (mimicking an acoustic instrument) and high-velocity
+    // notes can be left untouched, depending on the curve mode.
+    int curved = applyVelocityCurve(velocity);
     EnterCritical();
-    m_piano.noteOn(note, velocity);
+    m_piano.noteOn(note, curved);
     LeaveCritical();
 }
 
@@ -644,7 +663,7 @@ void CMicroDX21::setMidiSetting(int id, int value)
             break;
 
         case kMidiVelocityCurve:
-            m_VelocityCurve = std::clamp(value, 0, 2);
+            m_VelocityCurve = std::clamp(value, 0, 4);
             break;
 
         case kMidiTranspose:
@@ -671,17 +690,9 @@ void CMicroDX21::setMidiSetting(int id, int value)
 
 int CMicroDX21::applyVelocityCurve(int vel) const
 {
-    switch (m_VelocityCurve)
-    {
-        case 1: // Soft
-            return (int)(vel * 0.7f);
-
-        case 2: // Hard
-            return std::min(127, (int)(vel * 1.3f));
-
-        default: // Linear
-            return vel;
-    }
+    // The actual curve math lives in microdx21/velocitycurve.h so it
+    // can be unit-tested without spinning up the full CMicroDX21 class.
+    return microdx21::applyVelocityCurveId(vel, m_VelocityCurve);
 }
 
 int CMicroDX21::applyTranspose(int note) const

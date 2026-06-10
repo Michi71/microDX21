@@ -56,6 +56,33 @@ void CConfig::Load()
     if (m_nMIDIChannel > 16)
         m_nMIDIChannel = 0;
 
+    // VelocityCurve: 0=Linear 1=Soft 2=Hard 3=DX21 4=Softest.
+    // Also accept named strings: linear, soft, hard, dx21, softest.
+    std::string velCurve = m_Properties.GetString("VelocityCurve", "linear");
+    auto trim = [](std::string& s) {
+        while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t'))
+            s.pop_back();
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+            s.erase(0, 1);
+    };
+    trim(velCurve);
+    for (auto& c : velCurve) c = static_cast<char>(::tolower(c));
+    if      (velCurve == "linear")  m_nVelocityCurve = 0;
+    else if (velCurve == "soft")    m_nVelocityCurve = 1;
+    else if (velCurve == "hard")    m_nVelocityCurve = 2;
+    else if (velCurve == "dx21")    m_nVelocityCurve = 3;
+    else if (velCurve == "softest") m_nVelocityCurve = 4;
+    else {
+        // Try parsing as integer for backward compat
+        char* endp = nullptr;
+        long n = ::strtol(velCurve.c_str(), &endp, 10);
+        if (endp != velCurve.c_str() && n >= 0 && n <= 4) {
+            m_nVelocityCurve = static_cast<unsigned>(n);
+        } else {
+            m_nVelocityCurve = 0;  // unknown → Linear
+        }
+    }
+
     // ───────────────────────────────────────────────
     // USB
     // ───────────────────────────────────────────────
@@ -147,6 +174,7 @@ unsigned CConfig::GetMIDIBaudRate() const { return m_nMIDIBaudRate; }
 bool CConfig::GetMIDIThruEnabled() const { return m_bMIDIThruEnabled; }
 
 unsigned CConfig::GetMIDIChannel() const { return m_nMIDIChannel; }
+unsigned CConfig::GetVelocityCurve() const { return m_nVelocityCurve; }
 
 unsigned CConfig::GetMasterVolume() const { return m_nMasterVolume; }
 
