@@ -30,3 +30,14 @@ add_executable(standalone test/standalone.cpp)
 target_link_libraries(standalone ${SDL2_LIBRARIES} ${PORTMIDI_LIBRARY} opmemu)
 
 target_include_directories(standalone PRIVATE test)
+
+# Algorithm prober: per-CON OPM topology test. Outputs raw PCM files
+# that are analyzed externally. No SDL/PortMidi needed.
+add_executable(alg_prober tools/alg_prober.cpp)
+target_link_libraries(alg_prober opmemu)
+
+# Voice-stealing unit test. No SDL/PortMidi needed.
+enable_testing()
+add_executable(test_voice_stealing tests/test_voice_stealing.cpp)
+target_link_libraries(test_voice_stealing opmemu)
+add_test(NAME voice_stealing COMMAND test_voice_stealing)

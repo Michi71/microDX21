@@ -463,6 +463,14 @@ void COPMEmu::applyPitchToVoice(int voice)
 // smoothly one step at a time, so there is no audible click. The fast RR
 // ensures the envelope ramps down quickly, and the max TL silences the
 // output regardless of the envelope phase.
+//
+// Sustain-aware priority: when stealing, we prefer non-sustained voices
+// (voices with the sustain-pedal-held flag cleared) over sustained ones.
+// This matches the original DX21's held-note protection: notes that the
+// player explicitly held with the pedal should not be silently destroyed
+// by new note-ons until the pedal is released. Only when all active voices
+// in the relevant side are sustained (extreme polyphony under sustain) do
+// we fall back to stealing the oldest sustained voice.
 // ===========================================================================
 int COPMEmu::allocVoice(Side side, int note)
 {
@@ -499,11 +507,33 @@ int COPMEmu::allocVoice(Side side, int note)
     for (int i = start; i < start + count; ++i) {
         if (!m_voices[i].active) return i;
     }
-    // Steal oldest voice within side — smooth fade-out
-    int oldest = start;
-    for (int i = start + 1; i < start + count; ++i) {
-        if (m_voices[i].age < m_voices[oldest].age) oldest = i;
+    // Steal a voice within side, preferring non-sustained voices.
+    //
+    // Sustained voices are held by the sustain pedal and represent notes
+    // the player expects to keep ringing. Stealing them silently destroys
+    // the held note. We therefore prefer to steal a non-sustained voice
+    // first (if any exist), and only fall back to stealing a sustained
+    // voice when all voices in this side are held by pedal.
+    //
+    // Within each pool (non-sustained, sustained), steal the oldest
+    // active voice by `age` (FIFO). This matches the original DX21's
+    // voice-allocation behavior, which is first-in-first-out within the
+    // available pool.
+    int oldest_non_sustained = -1;
+    int oldest_sustained     = -1;
+    for (int i = start; i < start + count; ++i) {
+        if (!m_voices[i].active) continue;
+        if (m_voices[i].sustained) {
+            if (oldest_sustained < 0 || m_voices[i].age < m_voices[oldest_sustained].age) {
+                oldest_sustained = i;
+            }
+        } else {
+            if (oldest_non_sustained < 0 || m_voices[i].age < m_voices[oldest_non_sustained].age) {
+                oldest_non_sustained = i;
+            }
+        }
     }
+    int oldest = (oldest_non_sustained >= 0) ? oldest_non_sustained : oldest_sustained;
     // Soft-steal: KeyOff + ramp mute + fast release instead of instant cut
     writeReg(0x08, static_cast<uint8_t>(oldest));
     for (int op = 0; op < 4; ++op) {

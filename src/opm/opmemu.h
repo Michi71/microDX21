@@ -100,6 +100,32 @@ public:
     void processBlock(float* outputL, float* outputR, int numSamples);
     void processMidi(uint8_t* data, int size);
 
+    // --- Voice-state inspection (read-only, safe to call from any thread) ---
+    //
+    // Used by the unit test suite to verify voice-allocation and
+    // sustain-pedal behavior. Returns:
+    //   isVoiceActive(i)     — true if voice i is currently in use
+    //   isVoiceSustained(i)  — true if voice i is held by sustain pedal
+    //   isVoicePlayingNote(i) — true if voice i is currently playing
+    //                           the given MIDI note (MIDI 0..127)
+    int  getNumVoices() const { return kNumVoices; }
+    bool isVoiceActive(int voice) const {
+        if (voice < 0 || voice >= kNumVoices) return false;
+        return m_voices[voice].active;
+    }
+    bool isVoiceSustained(int voice) const {
+        if (voice < 0 || voice >= kNumVoices) return false;
+        return m_voices[voice].sustained;
+    }
+    bool isVoicePlayingNote(int note) const {
+        for (int i = 0; i < kNumVoices; ++i) {
+            if (m_voices[i].active && m_voices[i].origNote == note) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     int  getNumPrograms();
     int  getCurrentProgram();
     const char* getCurrentProgramName();
