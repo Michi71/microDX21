@@ -15,27 +15,42 @@ static const uint8_t OP_ALL = OP_M1 | OP_C1 | OP_M2 | OP_C2;  // = 0x78
 // Algorithm Mapping: DX21 → YM2151
 // ===========================================================================
 //
-// The DX21 uses a YM2164 (OPP) chip, which has the same 8 algorithm topologies
-// as the YM2151 (OPM). The DX21 algorithm number maps 1:1 to the YM2151 CON
-// register field (bits [2:0] of register 0x20). This is confirmed by the
-// picoX21H reference project which uses alg directly as CON on real hardware.
+// The DX21 uses a YM2164 (OPP) chip, which has the same 8 algorithm
+// topologies as the YM2151 (OPM). The user-facing DX21 ALG value 1..8
+// maps 1:1 to the YM2151 CON register field (bits [2:0] of register
+// 0x20). The DX21_Patch struct stores alg 0-based, so it goes directly
+// into CON. This is confirmed by:
+//   1. The picoX21H reference project, which writes alg directly as CON
+//      on real YM2151 hardware.
+//   2. The MAME YM2151 emulator's set_connect() function
+//      (src/devices/sound/ym2151.cpp), which is the canonical ground
+//      truth for OPM algorithm topology.
+//   3. The Nuked OPM fm_algorithm table in opm.c, which produces
+//      the same per-CON carrier count as MAME (verified empirically
+//      with tools/alg_prober.cpp).
 //
-// YM2151 Algorithm Topologies (CON = algorithm number):
+// YM2151 Algorithm Topologies (CON = algorithm number, 0..7):
+//   ── Carriers (OUT) / Modulators shown explicitly ──
 //
-//   CON=0: M1→C1→OUT, M2→C2→OUT  (two independent FM pairs)
-//   CON=1: M1→C1→OUT, M2 + C2→OUT (FM pair + two additive)
-//   CON=2: M1 + C1→OUT, M2→C2→OUT (two additive + FM pair)
-//   CON=3: M1→C1→C2→OUT, M2→C2→OUT (serial FM + parallel modulator)
-//   CON=4: M1→M2→C2→OUT, C1→OUT   (3-op chain + additive)
-//   CON=5: M1→C1→OUT, M2→C2→OUT   (two FM pairs)
-//   CON=6: M1→(M2+C2), C1→C2→OUT  (complex)
-//   CON=7: M1+C1+M2+C2→OUT         (all additive)
+//   CON=0:  M1→C1→MEM→M2→C2→OUT     1 carrier:  C2
+//   CON=1:  M1→MEM, C1→MEM, MEM→M2→C2→OUT     1 carrier:  C2
+//   CON=2:  M1→C2, C1→MEM, MEM→M2→C2→OUT      1 carrier:  C2
+//   CON=3:  M1→C1→MEM→C2, M2→C2→OUT            1 carrier:  C2
+//   CON=4:  M1→C1→OUT, M2→C2→OUT               2 carriers: C1, C2
+//   CON=5:  M1→M2→OUT, C1→OUT, C2→OUT         3 carriers: M2, C1, C2
+//   CON=6:  M1→C1→OUT, M2→OUT, C2→OUT         3 carriers: C1, M2, C2
+//   CON=7:  M1, C1, M2, C2 all →OUT            4 carriers: all additive
+//
+// MEM is a 1-sample delay element that joins the chain in the more
+// complex algorithms. The YM2151's CON=0 is the "4-op serial" topology
+// (also known in the DX7/DX9 family as ALG 1); CON=7 is the "all
+// additive" topology (DX7/DX9 ALG 32).
 //
 // DX21 Operator → YM2151 Slot Mapping (per picoX21H reference):
-//   DX21 OP1 → YM2151 M1  (register offset +0)
-//   DX21 OP2 → YM2151 M2  (register offset +8)
-//   DX21 OP3 → YM2151 C1  (register offset +16)
-//   DX21 OP4 → YM2151 C2  (register offset +24)
+//   DX21 OP1 → YM2151 M1  (register offset +0,  KeyOn bit 0x40)
+//   DX21 OP2 → YM2151 M2  (register offset +8,  KeyOn bit 0x10)
+//   DX21 OP3 → YM2151 C1  (register offset +16, KeyOn bit 0x20)
+//   DX21 OP4 → YM2151 C2  (register offset +24, KeyOn bit 0x08)
 //
 // CRITICAL: OP2 must go to M2 (+8), NOT C1 (+16). A previous bug had
 // OP_SLOT={0,16,8,24} which swapped M2/C1, breaking all algorithms.
