@@ -54,6 +54,13 @@ public:
     // If fs is nullptr, memory is volatile (no persistence).
     explicit CDX21Memory(IFileSystem* fs = nullptr);
 
+    // --- Memory Protect (Function #23) ---
+    // When ON, setRamVoice() and importSysex() reject all writes
+    // (returns false / -1). Read paths (getRamVoice) are unaffected.
+    // The real DX21 hardware also gates these paths.
+    void setMemoryProtect(bool on) { m_memoryProt = on; }
+    bool isMemoryProtected() const  { return m_memoryProt; }
+
     // --- RAM Voice Management ---
     bool setRamVoice(int slot, const DX21_Patch& patch);
     const DX21_Patch* getRamVoice(int slot) const;
@@ -93,6 +100,7 @@ public:
 
 private:
     IFileSystem* m_fs;
+    bool         m_memoryProt;  // FUNCTION #23
     DX21_Patch   m_ram[kNumRamVoices];
     bool         m_ramValid[kNumRamVoices];
     DX21_Performance m_perf[kNumPerformances];

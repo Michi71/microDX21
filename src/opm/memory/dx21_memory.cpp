@@ -53,6 +53,7 @@ void DX21_Performance::setName(const char* n) {
 // ===========================================================================
 CDX21Memory::CDX21Memory(IFileSystem* fs)
     : m_fs(fs)
+    , m_memoryProt(false)
 {
     for (int i = 0; i < kNumRamVoices; ++i) {
         m_ramValid[i] = false;
@@ -69,6 +70,7 @@ CDX21Memory::CDX21Memory(IFileSystem* fs)
 // ===========================================================================
 bool CDX21Memory::setRamVoice(int slot, const DX21_Patch& patch) {
     if (slot < 0 || slot >= kNumRamVoices) return false;
+    if (m_memoryProt) return false;  // FUNCTION #23: write rejected
     m_ram[slot] = patch;
     m_ramValid[slot] = true;
     return true;
@@ -610,6 +612,10 @@ int CDX21Memory::importSysex(const uint8_t* data, size_t len) {
     }
     checksum &= 0x7F;
     if (data[6 + byteCount] != checksum) return -1;
+
+    // FUNCTION #23 (Memory Protect): bulk dump is a write to all 32
+    // RAM voices. Reject when protected.
+    if (m_memoryProt) return -1;
 
     // Parse voices
     int imported = 0;

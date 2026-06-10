@@ -13,6 +13,11 @@
 #include <circle/logger.h>
 #include <circle/timer.h>
 
+// Forward decl: the display only forward-declares COPMEmuAdapter in its
+// header. We use the public setMemoryProtect() on it (declared in
+// opmemuadapter.h) to forward the hold-tick #2 into the synth.
+class COPMEmuAdapter;
+
 using namespace DX21UI;
 
 static const char FromInput[] = "dx21inp";
@@ -228,8 +233,15 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
                 m_pDisplay->SetStatus(m_bBrowse ? "BROWSE"
                                                 : "EDIT");
             } else if (m_nHoldCount == 2) {
-                m_pDisplay->SetMemoryProtect(!m_pDisplay->GetMemoryProtect());
-                m_pDisplay->SetStatus(m_pDisplay->GetMemoryProtect()
+                bool newProt = !m_pDisplay->GetMemoryProtect();
+                m_pDisplay->SetMemoryProtect(newProt);
+                // Forward into the synth so the gates in COPMEmu /
+                // CDX21Memory take effect. The adapter is bound by
+                // the kernel after both are constructed.
+                if (COPMEmuAdapter* pA = m_pDisplay->GetAdapter()) {
+                    pA->setMemoryProtect(newProt);
+                }
+                m_pDisplay->SetStatus(newProt
                                       ? "MEMORY PROTECTED"
                                       : "MEMORY UNPROTECTED");
                 m_nHoldCount = 0;

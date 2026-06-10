@@ -99,6 +99,7 @@ COPMEmu::COPMEmu(IFileSystem* fs)
     , m_portaRate(0)
     , m_portaDecayFactor(0.0f)
     , m_pbMode(PBAll)
+    , m_memoryProt(false)
     , m_breathValue(0)
     , m_breathPitchBias(0)
     , m_breathAmplitude(0)
@@ -1439,6 +1440,8 @@ void COPMEmu::initVoice() {
     int voice = m_sysexEditVoice;
     if (voice < 0 || voice >= kNumVoices) return;
 
+    if (m_memoryProt) return;  // FUNCTION #23: init-voice is a write
+
     DX21_Patch* ram = m_memory.getRamVoice(voice);
     if (!ram) return;
 
@@ -1457,6 +1460,7 @@ void COPMEmu::initVoice() {
 void COPMEmu::saveEditRecall() {
     int voice = m_sysexEditVoice;
     if (voice < 0 || voice >= kNumVoices) return;
+    if (m_memoryProt) return;  // FUNCTION #23: snapshot is a write
     DX21_Patch* ram = m_memory.getRamVoice(voice);
     if (!ram) return;
     m_editRecall       = *ram;
@@ -1469,6 +1473,7 @@ void COPMEmu::saveEditRecall() {
 // ===========================================================================
 void COPMEmu::loadEditRecall() {
     if (!m_bEditRecallValid) return;
+    if (m_memoryProt) return;  // FUNCTION #23: recall overwrites the voice
     int voice = m_sysexEditVoice;
     if (voice < 0 || voice >= kNumVoices) return;
     DX21_Patch* ram = m_memory.getRamVoice(voice);
@@ -1800,6 +1805,11 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
     // DX21 32-voice VCED Bulk Dump: F0 43 0n 09 ... F7
     // Handled by CDX21Memory::importSysex — just pass it through here.
     if (modelId == 0x09) {
+        // FUNCTION #23 (Memory Protect): bulk dump is a write to all 32
+        // RAM voices. Reject when protected.
+        if (m_memoryProt) {
+            return;
+        }
         // We could store it and let the audio thread handle it,
         // but bulk dumps are large and rare. For now, handle directly
         // on MIDI thread since they don't touch audio-critical registers.
@@ -1817,6 +1827,9 @@ void COPMEmu::applySysexChanges()
     for (int i = 0; i < kSysexNumParams; ++i) {
         if (!m_sysexDirty[i]) continue;
         m_sysexDirty[i] = false;
+        // Defence in depth: if protect was enabled after handleSysex()
+        // queued the change, drop it here too.
+        if (m_memoryProt) continue;
         applySysexParam(i, m_sysexParam[i]);
     }
 }
@@ -1829,6 +1842,8 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
 {
     int voice = m_sysexEditVoice;
     if (voice < 0 || voice >= kNumVoices) return;
+
+    if (m_memoryProt) return;  // FUNCTION #23: real-time param is a write
 
     // Update RAM patch so the change persists
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
@@ -1981,6 +1996,8 @@ void COPMEmu::writeVcedGlobal(int param, uint8_t value)
     int voice = m_sysexEditVoice;
     if (voice < 0 || voice >= kNumVoices) return;
 
+    if (m_memoryProt) return;  // FUNCTION #23: slider edit is a write
+
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
     if (!ramPatch) return;
 
@@ -2052,6 +2069,8 @@ void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
     int voice = m_sysexEditVoice;
     if (voice < 0 || voice >= kNumVoices) return;
     if (op < 0 || op >= 4) return;
+
+    if (m_memoryProt) return;  // FUNCTION #23: slider edit is a write
 
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
     if (!ramPatch) return;
@@ -2150,4 +2169,38 @@ void COPMEmu::setSysexEditVoice(int voice)
     if (voice < 0) voice = 0;
     if (voice >= kNumVoices) voice = kNumVoices - 1;
     m_sysexEditVoice = voice;
+}
+
+// ----------------------------------------------------------------------------
+// setMemoryProtect / isMemoryProtected — Function #23 (dat_F610:35)
+//
+// Toggle the global write-protect on RAM voices and performance memories.
+// When ON, every write path that lands in CDX21Memory::m_ram or
+// CDX21Memory::m_perf is rejected:
+//   - importSysex (32-voice VCED bulk dump)
+//   - applySysexParam (real-time F0 43 0n 12 pp vv F7)
+//   - writeVcedGlobal / writeVcedOperator (slider edits)
+//   - initVoice, saveEditRecall, loadEditRecall
+//
+// Read paths (getRamVoice, applyPatchToSide) are unaffected — the synth
+// still plays what's in RAM, the user just can't change it.
+void COPMEmu::setMemoryProtect(bool on)
+{
+    m_memoryProt = on;
+    m_memory.setMemoryProtect(on);  // keep both layers in sync
+}
+
+// ----------------------------------------------------------------------------
+// TestDoor — thin public back-door for unit tests. Lets the test code call
+// the private writeVcedGlobal/Operator methods so it can verify the
+// memory-protect gates without going through SysEx or the adapter.
+// ----------------------------------------------------------------------------
+void COPMEmu::TestDoor::writeVcedGlobal(COPMEmu& e, int p, uint8_t v)
+{
+    e.writeVcedGlobal(p, v);
+}
+
+void COPMEmu::TestDoor::writeVcedOperator(COPMEmu& e, int op, int p, uint8_t v)
+{
+    e.writeVcedOperator(op, p, v);
 }

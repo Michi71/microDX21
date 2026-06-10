@@ -94,6 +94,15 @@ class COPMEmu {
     friend class COPMEmuAdapter;
 
 public:
+    // Test helpers — public back-door so unit tests can poke
+    // writeVcedGlobal/Operator without exposing them on the
+    // regular public API. The struct is defined here; access
+    // control comes from the friend declaration further down.
+    struct TestDoor {
+        static void writeVcedGlobal(COPMEmu& e, int p, uint8_t v);
+        static void writeVcedOperator(COPMEmu& e, int op, int p, uint8_t v);
+    };
+    friend struct TestDoor;
     explicit COPMEmu(IFileSystem* fs = nullptr);
 
     void Initialize();
@@ -298,6 +307,15 @@ public:
     void setSysexEditVoice(int voice);   // 0..7, which voice slot receives parameter changes
     int  getSysexEditVoice() const { return m_sysexEditVoice; }
 
+    // --- Memory Protect (Function #23 / dat_F610:35) ---
+    // When ON, all writes to RAM voices and performance memories are
+    // rejected: SysEx bulk dumps, real-time parameter changes, slider
+    // edits, init-voice, recall-edit. Reads (getRamVoice, getPatch) and
+    // OPM register reads are unaffected. The real DX21 hardware also
+    // gates these paths behind this bit.
+    void setMemoryProtect(bool on);
+    bool isMemoryProtected() const         { return m_memoryProt; }
+
 private:
     static const int      kNumVoices  = 8;
     static const uint32_t kSampleRate = 48000;
@@ -355,6 +373,9 @@ private:
     // --- PB Mode (Low / High / K-on) ---
     enum PBMode { PBAll, PBLow, PBHigh, PBKOn };
     PBMode m_pbMode;
+
+    // --- Memory Protect (Function #23) ---
+    bool m_memoryProt;
 
     // --- Modulation Wheel (CC#1) + Breath (CC#2) ---
     int m_mwValue;           // 0..127 (MIDI CC#1)

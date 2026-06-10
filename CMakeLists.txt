@@ -52,4 +52,9 @@ target_include_directories(test_portamento PRIVATE src)
 target_link_libraries(test_portamento opmemu)
 add_test(NAME portamento COMMAND test_portamento)
 
+add_executable(test_memory_protect tests/test_memory_protect.cpp)
+target_include_directories(test_memory_protect PRIVATE src)
+target_link_libraries(test_memory_protect opmemu)
+add_test(NAME memory_protect COMMAND test_memory_protect)
+
 add_test(NAME voice_stealing COMMAND test_voice_stealing)

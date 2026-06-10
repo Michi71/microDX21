@@ -217,6 +217,17 @@ public:
         m_sysexOutUser = user;
     }
 
+    // --- Memory Protect (Function #23) ---
+    // Forwards to COPMEmu::setMemoryProtect, which also gates
+    // CDX21Memory internally. The display calls this on the 2nd
+    // hold-tick; the kernel wires the adapter into the display.
+    void setMemoryProtect(bool on) {
+        if (m_synth) m_synth->setMemoryProtect(on);
+    }
+    bool isMemoryProtected() const {
+        return m_synth && m_synth->isMemoryProtected();
+    }
+
     void handleSysexMessage(const uint8_t* data, size_t len)
     {
         if (m_synth && data && len > 0)
