@@ -82,3 +82,14 @@ src/kernel8.map
 
 # build.sh copies the kernel image to out/
 out/
+
+# macOS Finder metadata
+.DS_Store
+
+# Copyrighted local reference material (kept out of the public repo):
+# original DX21 ROM dump and Yamaha/TX81Z scans. The reverse-engineered
+# listing src/opm/firmware/dx21_rom_v1_5.asm stays tracked.
+src/opm/firmware/DX21romv15.BIN
+doc/Yamaha-TX81Z-Manual.pdf
+doc/refcard.gif
+doc/tx81z-algorithms.jpg

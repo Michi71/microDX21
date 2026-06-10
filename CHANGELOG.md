@@ -90,15 +90,18 @@ All notable changes to microDX21, in reverse chronological order.
   MAME-derived carrier count for each of the 8 algorithms: CON 0..3 =
   1 carrier, CON 4 = 2, CON 5..6 = 3, CON 7 = 4. Verified empirically
   with `tools/alg_prober.cpp` against the running Nuked-OPM instance.
-  Also added `src/opm/firmware/DX21romv15.BIN` (32 KB, the V1.5 ROM as
-  a binary) and a reference assembly listing
+  Also added a reference assembly listing
   `src/opm/firmware/dx21_rom_v1_5.asm` (14 607 lines of reverse-
   engineered M6803 code) for future SysEx- and patch-table work.
-- **Reference docs in `doc/`** for ongoing algorithm and voice-table
-  analysis: `Yamaha-TX81Z-Manual.pdf` (algorithm diagrams), the
-  gist by @bryc (`e997954473940ad97a825da4e7a496fa`) referenced from
-  comments, and `tx81z-algorithms.jpg` as a visual aid when reasoning
-  about the DX21's 4-OP topology.
+  The raw ROM dump (`src/opm/firmware/DX21romv15.BIN`, 32 KB, V1.5)
+  stays **local-only** (gitignored) for copyright reasons.
+- **Local reference docs in `doc/`** for ongoing algorithm and
+  voice-table analysis: `Yamaha-TX81Z-Manual.pdf` (algorithm
+  diagrams), the gist by @bryc (`e997954473940ad97a825da4e7a496fa`)
+  referenced from comments, and `tx81z-algorithms.jpg` /
+  `refcard.gif` as visual aids when reasoning about the DX21's 4-OP
+  topology. These scans are **not tracked** in the repo (gitignored,
+  copyright).
 
 ### SD card persistence
 - **Pre-create `MICRODX21/BANK_01..16/` on the release image** so the
