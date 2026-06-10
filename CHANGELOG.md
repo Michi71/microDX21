@@ -4,6 +4,11 @@ All notable changes to microDX21, in reverse chronological order.
 
 ## [Unreleased]
 
+> The Removed/Added/Changed sub-sections immediately below describe
+> the **0.1.0** public release delta. The Documentation, SD card,
+> Synth engine, Memory Protect, Build, Fixed, and Test coverage
+> sub-sections further down describe the **post-0.1.0** work.
+
 ### Removed
 - **USB-MIDI Gadget mode**: dropped the in-kernel `CUSBMIDIGadget` branch that let the synth Pi appear as a USB-MIDI device to a host. The synth Pi is now USB-Host-only. USB-MIDI Gadget is handled by an external RP2350 "Comms" processor (pico-midi-adapter) that bridges USB-MIDI to UART RX/TX on GPIO 14/15. See `pico-midi-adapter/README` for the wiring.
   - `CKernel::m_pUSBGadget` member and constructor/destructor removed (`src/kernel.h`, `src/kernel.cpp`).
@@ -67,6 +72,167 @@ All notable changes to microDX21, in reverse chronological order.
 
 ### Changed
 - `CDX21Display::Render()` dispatch: if `m_bSplash` is true, render the splash instead of the per-mode page. The new member is declared after `m_LastRenderMs` in the header to match the constructor's init-list order (-Wreorder).
+
+### Documentation & diagrams
+- **Stack-exploded-view image for the Pi Zero 2 WH hardware build** (`doc/images/microdx21_stack_exploded.svg` + `.png` + `.body.txt` + `.prompt.md` + `render_stack.sh`).
+  LEGO-style exploded view of the four-board stack in mechanical order
+  (top→bottom): 1. Waveshare 2.23" OLED HAT (SSD1305, SPI/I2C), 2.
+  Adafruit Perma-Proto Bonnet Mini (carries the 5-wire KY-040 cable
+  only — no encoder, no audio jacks, no MIDI/HP jacks on the proto),
+  3. WM8960 Hi-Fi Sound Card HAT (stereo codec over I2S + I2C), 4.
+  Raspberry Pi Zero 2 WH base. The KY-040 rotary encoder sits **outside
+  the stack** and is wired to the proto bonnet via 5 flying leads
+  (Encoder A, B, SW, GND, +3.3 V). The image is referenced from
+  `README.md` "Hardware" section so newcomers can see the assembly
+  before they pick up the soldering iron.
+- **Algorithm-topology comment block** in `src/opm/opmemu.cpp` (the
+  `kNumCarriersPerAlg[]` table and the prose around it) replaced with a
+  MAME-derived carrier count for each of the 8 algorithms: CON 0..3 =
+  1 carrier, CON 4 = 2, CON 5..6 = 3, CON 7 = 4. Verified empirically
+  with `tools/alg_prober.cpp` against the running Nuked-OPM instance.
+  Also added `src/opm/firmware/DX21romv15.BIN` (32 KB, the V1.5 ROM as
+  a binary) and a reference assembly listing
+  `src/opm/firmware/dx21_rom_v1_5.asm` (14 607 lines of reverse-
+  engineered M6803 code) for future SysEx- and patch-table work.
+- **Reference docs in `doc/`** for ongoing algorithm and voice-table
+  analysis: `Yamaha-TX81Z-Manual.pdf` (algorithm diagrams), the
+  gist by @bryc (`e997954473940ad97a825da4e7a496fa`) referenced from
+  comments, and `tx81z-algorithms.jpg` as a visual aid when reasoning
+  about the DX21's 4-OP topology.
+
+### SD card persistence
+- **Pre-create `MICRODX21/BANK_01..16/` on the release image** so the
+  MEMORY-mode tape-save flow has somewhere to land the first time.
+  `scripts/prepare_sd_skeleton.sh` builds an empty skeleton tree
+  (`voice_00.json` … `voice_31.json` placeholders in each bank,
+  `performances.json` at the top) and is invoked by
+  `.github/workflows/build.yml` right before the IMG is published.
+  Users who only reflash the kernel can now run "SAVE → group 01 → YES"
+  out of the box.
+- **Runtime fallback `IFileSystem::MakeDirectory(path, recursive=true)`**:
+  before, a missing parent dir would cause `saveRamBank` /
+  `savePerformanceBank` to fail on a freshly formatted card. Now both
+  backends (`std_filesystem.h`, `fatfs_filesystem.h`) implement
+  `MakeDirectory` so the synth can create the `MICRODX21/` and
+  `BANK_NN/` parents on demand. The release-pipeline pre-create is
+  still the canonical path; this is the safety net.
+- **`config/microdx21.ini`** gained a `[SDCard]` section documenting
+  the bank layout and the optional auto-load behaviour.
+
+### Synth engine correctness
+- **Sustain-aware voice stealing** (`commit 62537e0`):
+  - `COPMEmu::allocVoice()` now prefers a non-sustained voice over a
+    sustained one when stealing, so a held note under sustain-pedal
+    never gets cut off by an incoming key press. The fallback chain
+    is: (1) inactive voice, (2) oldest non-sustained active voice,
+    (3) oldest sustained voice. The soft-steal envelope (TL ramp +
+    fast RR) is preserved on the chosen victim.
+  - New public accessors on `COPMEmu` for test inspection:
+    `isVoiceActive(i)`, `isVoiceSustained(i)`, `isVoicePlayingNote(n)`.
+  - `tests/test_voice_stealing.cpp` — 3 scenarios covering (a) prefer
+    inactive, (b) prefer non-sustained, (c) fall through to oldest
+    sustained.
+- **Configurable velocity curve** (`commit 3af0f41`):
+  - The pre-existing `applyVelocityCurve()` was defined but never
+    called from the MIDI path — fixed. `CMicroDX21::NoteOn()` now
+    threads every key-on through it.
+  - 5 named curves via `vel_out = round((vel_in/127)^p * 127)`:
+    `linear` (p=1.0), `soft` (p=1.3), `hard` (p=0.7), `dx21` (p=1.5),
+    `softest` (p=2.0).
+  - Logic extracted to header-only `src/microdx21/velocitycurve.h`
+    (namespace `microdx21`, enum `VelocityCurve`).
+  - Configurable from `config/microdx21.ini` (`VelocityCurve=dx21`)
+    or via the new `kMidiVelocityCurve` SysEx/CC param (clamped 0..4).
+  - `tests/test_velocity_curve.cpp` — 7 scenarios verifying the
+    monotonicity, end-point anchoring, and per-curve shape.
+- **Exponential portamento with per-block decay** (`commit 89f1e4f`):
+  - The DX21's glide is exponential in time (per the owner's manual);
+    the old implementation was linear with a per-sample rate factor,
+    which made the glide speed depend on the audio buffer size.
+  - `m_portaRateFactor` → `m_portaDecayFactor`; new formula:
+    `T_half_max = 2.5 s` at rate=99, `decay = 0.5^(1/(T_half * sr))`,
+    applied per-block via `std::pow(m_portaDecayFactor, numSamples)`.
+    This makes 64-sample and 256-sample buffers produce the same
+    curve. Rate 0 disables (instant snap), rate 99 gives ~12.5 s per
+    octave.
+  - Fixed a pre-existing bug where `voiceCount(SideA)` in MONO mode
+    returned 8 instead of 1, so `allocVoice`'s MONO pre-step never
+    fired and consecutive MONO notes landed on different voices (no
+    portamento). Now `voiceCount` returns 1 in MONO+Single.
+  - New public accessors: `getVoicePitch(int)`, `isVoicePorting(int)`.
+  - `tests/test_portamento.cpp` — 5 scenarios (rate=0 snap, glide
+    happens, higher rate = slower, exponential convergence at
+    known offsets, mode change Off→FullTime→Off).
+
+### Memory Protect (DX21 Function #23 / dat_F610:35)
+Before, the encoder hold-tick #2 toggled a flag in `CDX21Display` that
+was pure cosmetics — the 2×2 pixel indicator. Nothing in `COPMEmu` or
+`CDX21Memory` actually honoured it, so a SysEx bulk dump from a
+connected editor would happily overwrite all 32 RAM voices regardless
+of the toggle. The full enforcement lands in `commit 1617a0b`:
+
+- **Gated write paths in `COPMEmu`** (high-level helpers): `initVoice()`,
+  `saveEditRecall()` / `loadEditRecall()`, `writeVcedGlobal()` /
+  `writeVcedOperator()`, `applySysexParam()` (real-time 0x12 pp vv),
+  and `applySysexChanges()` (defence in depth — drops any queued
+  changes if the flag was enabled after `handleSysex()` queued them).
+  `handleSysex()` rejects the 32-voice VCED bulk dump (modelId=0x09).
+- **Gated write paths in `CDX21Memory`**: `setRamVoice()` returns
+  `false`, `importSysex()` returns `-1`. The `COPMEmu::setMemoryProtect`
+  setter delegates to `CDX21Memory::setMemoryProtect` so one call
+  updates both layers.
+- **Wiring**: `CDX21Input::ApplyEvent` (hold-tick #2) now also calls
+  `m_pDisplay->GetAdapter()->setMemoryProtect(newProt)` on top of the
+  display flag, so the toggle reaches the synth.
+- **Read paths unaffected** — `getRamVoice()`, `applyPatchToSide()`,
+  anything that reads from RAM still works. The synth keeps playing
+  whatever was last stored; the user just can't change it. Matches the
+  real DX21 hardware behaviour.
+- **Test back-door**: `COPMEmu::TestDoor` (public struct, friend) —
+  exposes `writeVcedGlobal/Operator` for unit tests via a friend
+  declaration. Production code never calls into it; the only consumers
+  are the test files.
+- `tests/test_memory_protect.cpp` — 8 scenarios (setRamVoice rejected,
+  importSysex rejected, reads still work, real-time param change
+  rejected, writeVcedGlobal rejected, writeVcedOperator rejected,
+  initVoice rejected, unprotect restores writes).
+
+### Build system & CI fixes
+- **`scripts/prepare_sd_skeleton.sh`** wired into
+  `.github/workflows/build.yml` as the canonical step that builds the
+  empty `MICRODX21/BANK_01..16/` tree before the IMG is published.
+- **GH Actions build verification** — every commit on `main` now
+  produces a valid `out/kernel_rpi{3,4,5}.img` (typical Pi-3 build:
+  813 856 bytes, runs in ~3 min on the hosted runner).
+
+### Fixed
+- **`CConfig::Load()` duplicate `trim` lambda** (`commit b637f87`).
+  When the `VelocityCurve` parsing block was added, a second
+  `auto trim = [](std::string& s) { ... };` was declared inside the
+  function, shadowing the one at the top of the same function. macOS
+  clang++ did not catch it because the host target doesn't actually
+  instantiate the FatFS include path; `aarch64-none-elf-g++` on GH
+  Actions did, with `conflicting declaration 'auto trim'`. Removed
+  the inner declaration, kept the outer. No behaviour change.
+- **`dx21_input.cpp` forward-declaration of `COPMEmuAdapter`**
+  (`commit 4b8c880`). The encoder hold-tick #2 calls
+  `pA->setMemoryProtect(newProt)` through a forward-declared type.
+  Clang accepts this as a free call, `aarch64-none-elf-g++` requires
+  the full type. Replaced the forward decl with `#include
+  "audio/opmemuadapter.h"`. No new dependency.
+
+### Test coverage
+| Target | ctest name | Scenarios | Status |
+|---|---|---|---|
+| `test_voice_stealing` | `voice_stealing` | 3 (prefer inactive, prefer non-sustained, fall through to oldest sustained) | PASS |
+| `test_velocity_curve` | `velocity_curve` | 7 (5 curves + monotonicity + end-point anchoring) | PASS |
+| `test_portamento` | `portamento` | 5 (rate=0 snap, glide, slower rate, exponential convergence, mode change) | PASS |
+| `test_memory_protect` | `memory_protect` | 8 (5 write paths rejected + reads unaffected + unprotect restores) | PASS |
+
+All 4 ctest targets are registered with `add_test()` and run on every
+host build (`cd build && cmake .. && cmake --build . && ctest`).
+The cross-compile path on GH Actions runs the same targets via the
+toolchain-bound `Makefile` build of the same files.
 
 ## [0.1.0] — 2026-06-06 — Initial release
 
