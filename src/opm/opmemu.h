@@ -277,18 +277,28 @@ public:
     }
     int  getMidiReceiveChannel() const { return m_midiRecvCh; }
 
-    // Foot controller routing (FUNCTION #30/#31). When Foot Volume
-    // is ON, MIDI CC#4 scales the stereo output (0..127 → 0..1).
-    // Disabling it snaps the level back to full so a half-pressed
-    // pedal can't mute the synth permanently. When Foot Sustain is
-    // OFF, CC#64 is ignored.
-    void setFootVolumeOn(bool on) {
-        m_footVolumeOn = on;
-        if (!on) m_footVolume = 127;
+    // Foot controller routing (FUNCTION #30/#31/#32, manual B5-B7).
+    //
+    // Foot Volume (B6) is a control RANGE 0..99: at 0 the pedal
+    // (MIDI CC#7) has no effect, at 99 it spans the full range from
+    // unity down to silence. Effective gain:
+    //   1 - (range/99) * (1 - cc7/127)
+    // Setting the range to 0 snaps the level back to full so a
+    // half-pressed pedal can't mute the synth permanently.
+    //
+    // Foot Sustain (B7): when OFF, CC#64 is ignored.
+    // Foot Porta (B5): when OFF, CC#65 (portamento switch) is ignored.
+    void setFootVolumeRange(int range) {
+        if (range < 0)  range = 0;
+        if (range > 99) range = 99;
+        m_footVolumeRange = range;
+        if (range == 0) m_footVolume = 127;
     }
-    bool getFootVolumeOn() const  { return m_footVolumeOn; }
-    void setFootSustainOn(bool on){ m_footSustainOn = on; }
-    bool getFootSustainOn() const { return m_footSustainOn; }
+    int  getFootVolumeRange() const { return m_footVolumeRange; }
+    void setFootSustainOn(bool on)  { m_footSustainOn = on; }
+    bool getFootSustainOn() const   { return m_footSustainOn; }
+    void setFootPortaOn(bool on)    { m_footPortaOn = on; }
+    bool getFootPortaOn() const     { return m_footPortaOn; }
 
     // ───────────────────────────────────────────────
     // SysEx out (dump transmit)
@@ -390,6 +400,18 @@ private:
         bool     isPorting;    // portamento in progress
         int      attackSamples; // remaining attack fade-in samples (0 = fully open)
         int      keyOnDelay;   // >0: KeyOn pending, countdown in audio samples
+
+        // --- Pitch EG (VCED 87-92, firmware-side like the real DX21) ---
+        // The effective PEG values are copied from the patch at
+        // setupVoice() so the audio loop never has to look up the
+        // patch. pegStage: 0 = →PL1, 1 = →PL2 (sustain), 2 = →PL3
+        // (release), 3 = idle/flat. pegLevel is in DX21 level units
+        // (0..99, 50 = center); the pitch offset is
+        // (pegLevel - 50) * 0.96 semitones (≈ ±4 octaves full scale).
+        float    pegLevel = 50.0f;
+        uint8_t  pegStage = 3;
+        uint8_t  pegR[3] = {99, 99, 99};
+        uint8_t  pegL[3] = {50, 50, 50};
     };
 
     IFileSystem* m_fs;
@@ -452,10 +474,12 @@ private:
     bool m_midiSwitchOn = true;  // FUNCTION #3: master MIDI receive switch
     int  m_midiRecvCh = 0;       // FUNCTION #6/#7: 0 = Omni, 1..16
 
-    // --- Foot controller (FUNCTION #30/#31) ---
-    bool m_footVolumeOn = true;  // CC#4 → output level enable
-    bool m_footSustainOn = true; // CC#64 → sustain enable
-    int  m_footVolume = 127;     // last CC#4 value (127 = full)
+    // --- Foot controller (FUNCTION #30/#31/#32) ---
+    int  m_footVolumeRange = 0;  // B6: CC#7 control range 0-99 (0 = off)
+    bool m_footSustainOn = true; // B7: CC#64 → sustain enable
+    bool m_footPortaOn = true;   // B5: CC#65 → portamento switch enable
+    int  m_footVolume = 127;     // last CC#7 value (127 = full)
+    bool m_portaSwitch = true;   // CC#65 state (true = portamento allowed)
 
     // --- SysEx out callback (dump transmit) ---
     SysexOutFn m_sysexOutFn = nullptr;
@@ -486,7 +510,10 @@ private:
     std::atomic<int> m_midiReadPos{0};   // consumer increments after read
 
     // --- SysEx Real-Time Parameter Change ---
-    static constexpr int kSysexNumParams = 76;  // DX21 VCED size
+    // Real DX21 numbering: VCED voice params 0-92 (manual table 5-2)
+    // plus function param 93 (operator enable, table 5-3). The other
+    // function params 94-127 (panel remote control) are not supported.
+    static constexpr int kSysexNumParams = 94;
     uint8_t  m_sysexParam[kSysexNumParams];
     bool     m_sysexDirty[kSysexNumParams];
     int      m_sysexEditVoice;  // 0..7, which voice slot is being edited
@@ -520,9 +547,10 @@ private:
     uint8_t  m_shadow[256];
 
     // --- Pitch / Portamento ---
-    void applyPitchToVoice(int voice);         // write KC/KF with PB+porta+tune+breath
+    void applyPitchToVoice(int voice);         // write KC/KF with PB+porta+tune+breath+PEG
     void completeKeyOn(int voice);             // delayed KeyOn: KC/KF + TL + KeyOn
     void updatePortamento(int numSamples);                    // called from processBlock
+    void updatePitchEG(int numSamples);                       // called from processBlock
     float computePortaDecayFactor(int rate) const;
     void writeFrequency(int voice, float pitchSemitones, bool keyOn = false);
     int  findVoiceForPB() const;               // find target voice per PBMode

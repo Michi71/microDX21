@@ -44,10 +44,22 @@ typedef struct {
 } DX21_Operator;
 
 // DX21 VCED voice parameters
+//
+// The fields after `name` were added for full DX21 VCED-93 SysEx
+// compatibility (owner's manual table 5-2, params 63-76 + 87-92) and
+// for the Pitch EG / operator-enable features. They are deliberately
+// placed LAST so the aggregate initializers of the 128 factory
+// patches below stay valid — the new fields zero-initialize. Because
+// an all-zero Pitch EG (levels 0/0/0 = lowest pitch) and op_enable=0
+// (all operators off) would be absurd readings for legacy data, the
+// accessors dx21_effective_peg_level() / dx21_op_enabled() below
+// define the sentinel semantics: PEG levels 0/0/0 → flat (50/50/50),
+// op_enable 0 → all four operators on. Real VCED imports always set
+// the fields explicitly.
 typedef struct {
     uint8_t alg;       // Algorithm (0-7)
     uint8_t fb;        // Feedback Level (0-7)
-    uint8_t lfo_speed;// LFO Speed (0-255)
+    uint8_t lfo_speed;// LFO Speed (0-255, YM2151 LFRQ; VCED 54 is 0-99)
     uint8_t lfo_delay;// LFO Delay (0-127)
     uint8_t pmd;      // Pitch Modulation Depth (0-127)
     uint8_t amd;      // Amplitude Modulation Depth (0-127)
@@ -58,10 +70,56 @@ typedef struct {
     int8_t  key_offset;// Transpose in semitones
     DX21_Operator op[4];
     char    name[32];
+
+    // --- Per-voice function data (VCED 63-76) ---
+    uint8_t mono;        // VCED 63: Poly/Mono (0,1)
+    uint8_t pb_range;    // VCED 64: Pitch Bend Range (0-12)
+    uint8_t porta_mode;  // VCED 65: Portamento Mode (0,1)
+    uint8_t porta_time;  // VCED 66: Portamento Time (0-99)
+    uint8_t foot_volume; // VCED 67: Foot Volume range (0-99)
+    uint8_t sus_fs;      // VCED 68: Sustain Foot Switch (0,1)
+    uint8_t porta_fs;    // VCED 69: Portamento Foot Switch (0,1)
+    uint8_t chorus;      // VCED 70: Chorus Switch (0,1)
+    uint8_t mw_pitch;    // VCED 71: MW Pitch Mod Range (0-99)
+    uint8_t mw_amp;      // VCED 72: MW Amplitude Mod Range (0-99)
+    uint8_t bc_pitch;    // VCED 73: BC Pitch Mod Range (0-99)
+    uint8_t bc_amp;      // VCED 74: BC Amplitude Mod Range (0-99)
+    uint8_t bc_pbias;    // VCED 75: BC Pitch Bias (0-99, 50=center)
+    uint8_t bc_ebias;    // VCED 76: BC EG Bias (0-99)
+
+    // --- Pitch EG (VCED 87-92) ---
+    uint8_t peg_r[3];    // PEG Rate 1-3 (0-99, 99=instant)
+    uint8_t peg_l[3];    // PEG Level 1-3 (0-99, 50=center pitch)
+
+    // --- Operator enable (SysEx function param 93, not in VCED dump) ---
+    // Bits 3..0 = OP1..OP4 (TX81Z bit convention). 0 = legacy
+    // sentinel meaning "all on" — see dx21_op_enabled().
+    uint8_t op_enable;
 } DX21_Patch;
+
+// Effective Pitch-EG level for stage i (0..2): all-zero levels are the
+// legacy/zero-initialized sentinel and read as flat 50 (no PEG effect).
+static inline uint8_t dx21_effective_peg_level(const DX21_Patch* p, int i) {
+    if (p->peg_l[0] == 0 && p->peg_l[1] == 0 && p->peg_l[2] == 0) return 50;
+    return p->peg_l[i] > 99 ? 99 : p->peg_l[i];
+}
+
+// Effective operator-enable flag for *internal* op index 0..3
+// (OP1..OP4 panel order). Storage uses TX81Z bit order b3..b0 =
+// OP1..OP4; 0 is the legacy sentinel for "all on".
+static inline int dx21_op_enabled(const DX21_Patch* p, int opIdx) {
+    if (p->op_enable == 0) return 1;
+    return (p->op_enable >> (3 - opIdx)) & 1;
+}
 
 #define TOTAL_OPM_PATCHES 128
 
+// The factory table below intentionally initializes only the classic
+// VCED fields; the per-voice function data, PEG and op-enable fields
+// zero-initialize and are interpreted through the sentinel accessors
+// above. Suppress -Wmissing-field-initializers for the table only.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 const DX21_Patch dx21_patches[TOTAL_OPM_PATCHES] = {
     // Patch 000: Deep Grand
     {
@@ -1472,5 +1530,6 @@ const DX21_Patch dx21_patches[TOTAL_OPM_PATCHES] = {
         "Mars to ??"
     },
 };
+#pragma GCC diagnostic pop
 
 #endif // OPM_PATCHES_H

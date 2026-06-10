@@ -61,12 +61,12 @@ static const int kEditToAdapter[] = {
     /* 19  OUTPUT LEVEL       */  kParamOp0Out,
     /* 20  RATE SCALE         */  kParamOp0RS,        // OP1 RS (0..3)
     /* 21  LEVEL SCALE        */  kParamOp0LS,        // OP1 LS (0..99)
-    /* 22  PEG RATE 1         */  -1,                 // OPM has no PEG
-    /* 23  PEG LEVEL 1        */  -1,
-    /* 24  PEG RATE 2         */  -1,
-    /* 25  PEG LEVEL 2        */  -1,
-    /* 26  PEG RATE 3         */  -1,
-    /* 27  PEG LEVEL 3        */  -1,
+    /* 22  PEG RATE 1         */  kParamPEGR1,        // firmware-side PEG
+    /* 23  PEG LEVEL 1        */  kParamPEGL1,
+    /* 24  PEG RATE 2         */  kParamPEGR2,
+    /* 25  PEG LEVEL 2        */  kParamPEGL2,
+    /* 26  PEG RATE 3         */  kParamPEGR3,
+    /* 27  PEG LEVEL 3        */  kParamPEGL3,
     /* 28  SAW UP             */  kParamLFOWave,      // wave=0
     /* 29  SQUARE             */  kParamLFOWave,      // wave=1
     /* 30  TRIANGL            */  kParamLFOWave,      // wave=2
@@ -143,7 +143,7 @@ static const int kFunctionToAdapter[] = {
     /* 29  Porta Time         */  kParamPortamentoRate,
     /* 30  Foot Volume        */  kParamFootVolume,    // CC#4 enable
     /* 31  Foot Sustain:      */  kParamFootSustain,   // CC#64 enable
-    /* 32  Foot Porta  :      */  kParamPortamentoMode,
+    /* 32  Foot Porta  :      */  kParamFootPorta,     // CC#65 jack enable
     /* 33  MW Pitch           */  kParamMWPitchRange,  // 0..99 (B8)
     /* 34  MW Amplitude       */  kParamMWAmpRange,    // 0..99 (B9)
     /* 35  BC Pitch           */  kParamBreathPitch,   // 0..99 (B10)

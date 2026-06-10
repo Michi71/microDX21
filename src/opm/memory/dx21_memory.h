@@ -38,7 +38,21 @@ struct DX21_Performance {
 // ===========================================================================
 // DX21 SysEx Constants
 // ===========================================================================
-static constexpr uint32_t DX21_SYSEX_VCED_SIZE = 76;      // one voice record
+// Real DX21 formats (owner's manual, MIDI DATA FORMAT tables 5-1/5-2):
+//   1-voice VCED:  format 0x03, 93 data bytes
+//   32-voice VMEM: format 0x04, 73 packed bytes per voice, zero-padded
+//                  to 128 per voice → 4096 data bytes
+// The checksum is the lowest 7 bits of the two's complement of the
+// data-byte sum (sum + checksum ≡ 0 mod 128).
+static constexpr uint32_t DX21_VCED93_SIZE    = 93;
+static constexpr uint32_t DX21_VMEM_SIZE      = 73;
+static constexpr uint32_t DX21_VMEM_PADDED    = 128;
+static constexpr uint32_t DX21_VMEM_BULK_SIZE = 32 * DX21_VMEM_PADDED; // 4096
+
+// Legacy microDX21-internal formats (pre-hardware-compat, kept for
+// RECEIVE only so old dumps remain loadable): 76-byte VCED records,
+// format byte 0x09 for the 32-voice bulk, simple-sum checksum.
+static constexpr uint32_t DX21_SYSEX_VCED_SIZE = 76;      // legacy one-voice record
 static constexpr uint32_t DX21_SYSEX_BULK_SIZE = 32 * DX21_SYSEX_VCED_SIZE; // 2432 bytes
 static constexpr uint8_t  DX21_SYSEX_HEADER[] = {0xF0, 0x43};
 
@@ -86,24 +100,31 @@ public:
     bool savePerformanceBank(const std::string& filePath);
     bool loadPerformanceBank(const std::string& filePath);
 
-    // --- SysEx Import / Export (DX21 compatible) ---
-    // Import a DX21 32-voice VCED bulk dump (SysEx data, including F0..F7).
-    // Returns number of voices successfully imported, or -1 on parse error.
+    // --- SysEx Import / Export (hardware-DX21 compatible) ---
+    // Import a 32-voice bulk dump (SysEx data, including F0..F7).
+    // Accepts the real DX21 VMEM format (0x04, 4096 bytes, two's-
+    // complement checksum) and, receive-only, the legacy microDX21
+    // format (0x09, 2432 bytes, simple-sum checksum). Returns number
+    // of voices successfully imported, or -1 on parse error.
     int importSysex(const uint8_t* data, size_t len);
 
-    // Export all 32 RAM voices as a DX21-compatible 32-voice VCED bulk dump.
-    // Output includes F0..F7 framing. Returns true on success.
+    // Export all 32 RAM voices as a real DX21 32-voice VMEM bulk dump
+    // (F0 43 0n 04 20 00 <4096 bytes> <checksum> F7). Compatible with
+    // DX21/DX27/DX100 hardware, editors and the .syx banks in the
+    // wild. Returns true on success.
     bool exportSysex(std::vector<uint8_t>& out) const;
 
-    // Export a single voice as a 1-voice VCED dump
-    // (F0 43 0n 03 <count> <76-byte VCED> <checksum> F7).
+    // Export a single voice as a real DX21 1-voice VCED dump
+    // (F0 43 0n 03 00 5D <93-byte VCED> <checksum> F7).
     // The patch does not have to live in this memory — the caller can
     // pass the edit buffer or a ROM patch. Returns true on success.
     bool exportVoiceSysex(const DX21_Patch& patch, std::vector<uint8_t>& out) const;
 
-    // Import a 1-voice VCED dump (modelId 0x03) into RAM slot `slot`
-    // (0..31). Validates framing, byte count and checksum. Honours
-    // Memory Protect. Returns true if the voice was stored.
+    // Import a 1-voice VCED dump (format 0x03) into RAM slot `slot`
+    // (0..31). Accepts the real 93-byte VCED and, receive-only, the
+    // legacy 76-byte record (dispatch by byte count). Validates
+    // framing, byte count and checksum. Honours Memory Protect.
+    // Returns true if the voice was stored.
     bool importVoiceSysex(const uint8_t* data, size_t len, int slot);
 
     // --- Init from ROM patches ---
@@ -124,7 +145,14 @@ private:
     std::string perfToJson(int slot, const DX21_Performance& perf) const;
     bool jsonToPerf(const std::string& json, DX21_Performance& outPerf) const;
 
-    // SysEx VCED encode/decode
+    // SysEx VCED encode/decode (legacy 76-byte project format)
     bool vcedToPatch(const uint8_t* vced76, DX21_Patch& outPatch) const;
     bool patchToVced(const DX21_Patch& patch, uint8_t* vced76) const;
+
+    // Real DX21 formats (manual tables 5-1/5-2). Operator block order
+    // on the wire is OP4, OP2, OP3, OP1.
+    bool vced93ToPatch(const uint8_t* vced93, DX21_Patch& outPatch) const;
+    bool patchToVced93(const DX21_Patch& patch, uint8_t* vced93) const;
+    bool vmemToPatch(const uint8_t* vmem73, DX21_Patch& outPatch) const;
+    bool patchToVmem(const DX21_Patch& patch, uint8_t* vmem73) const;
 };

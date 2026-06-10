@@ -372,6 +372,13 @@ void COPMEmu::applyTL(int voice, const DX21_Patch& patch, int midiNote, int velo
         int slot = voice + OP_SLOT[op];
         const DX21_Operator& o = patch.op[op];
 
+        // Operator ON/OFF (panel A1-A4 / SysEx function param 93):
+        // a disabled operator is muted via max attenuation.
+        if (!dx21_op_enabled(&patch, op)) {
+            writeReg(0x60 + slot, 0x80 | 0x7F);
+            continue;
+        }
+
         uint8_t tl = (99 - o.out) * 127 / 99;
         tl += computeLSOffset(o.ls, midiNote);
         tl += computeKVSOffset(o.kvs, velocity);
@@ -430,7 +437,9 @@ void COPMEmu::writeFrequency(int voice, float pitchSemitones, bool keyOn)
 void COPMEmu::applyPitchToVoice(int voice)
 {
     if (voice < 0 || voice >= kNumVoices) return;
-    if (!m_voices[voice].active) return;
+    // Inactive voices are still written while their Pitch EG release
+    // (stage 2) glides toward PL3 during the OPM release ring-out.
+    if (!m_voices[voice].active && m_voices[voice].pegStage != 2) return;
 
     float pitch = m_voices[voice].currentPitch;
 
@@ -445,6 +454,11 @@ void COPMEmu::applyPitchToVoice(int voice)
         float breathSemitones = (static_cast<float>(m_breathValue) / 127.0f) * (static_cast<float>(m_breathPitchBias) / 99.0f) * 12.0f;
         pitch += breathSemitones;
     }
+
+    // Apply Pitch EG offset. pegLevel is 50 (center) for idle/flat
+    // voices, so this is a no-op unless a PEG is in progress.
+    // Scale: (level - 50) * 0.96 semitones ≈ ±4 octaves full range.
+    pitch += (m_voices[voice].pegLevel - 50.0f) * 0.96f;
 
     writeFrequency(voice, pitch, false); // no keyOn
 }
@@ -622,6 +636,10 @@ void COPMEmu::noteOff(int note)
                 m_voices[i].active = false;
                 m_voices[i].sustained = false;
                 m_voices[i].keyOnDelay = 0;  // cancel pending KeyOn
+                // Pitch EG release: glide toward PL3 while the OPM
+                // release phase rings out (updatePitchEG keeps
+                // processing stage 2 even for inactive voices).
+                if (m_voices[i].pegStage < 2) m_voices[i].pegStage = 2;
             }
         }
     }
@@ -749,6 +767,8 @@ void COPMEmu::processMidiBuffer()
                         writeReg(0x08, static_cast<uint8_t>(v));
                         m_voices[v].active = false;
                         m_voices[v].sustained = false;
+                        // Pitch EG release (see noteOff)
+                        if (m_voices[v].pegStage < 2) m_voices[v].pegStage = 2;
                     }
                 }
             }
@@ -768,12 +788,42 @@ void COPMEmu::processMidiBuffer()
             // Breath Controller
             handleBreath(ev.data2);
         }
-        else if (status == 0xB0 && ev.data1 == 4) {
-            // Foot Controller (CC#4). FUNCTION #30 "Foot Volume":
-            // when ON, the pedal scales the stereo output level.
-            if (m_footVolumeOn) {
+        else if (status == 0xB0 && ev.data1 == 5) {
+            // Portamento Time (manual: reception data 4-1-1 (3)).
+            setPortamentoRate((ev.data2 * 99) / 127);
+        }
+        else if (status == 0xB0 && ev.data1 == 7) {
+            // Foot Volume (manual: CC#7). FUNCTION B6 sets the
+            // control RANGE 0..99; the effective gain is computed
+            // in processBlock from m_footVolume + m_footVolumeRange.
+            if (m_footVolumeRange > 0) {
                 m_footVolume = ev.data2;
             }
+        }
+        else if (status == 0xB0 && ev.data1 == 65) {
+            // Portamento footswitch (manual: CC#65). Only honoured
+            // when FUNCTION B5 "Foot Porta" enables the jack.
+            if (m_footPortaOn) {
+                m_portaSwitch = (ev.data2 >= 64);
+            }
+        }
+        else if (status == 0xB0 && ev.data1 == 123) {
+            // All Notes Off (channel mode message, manual 4-1-2 a).
+            for (int v = 0; v < kNumVoices; ++v) {
+                if (m_voices[v].active) {
+                    writeReg(0x08, static_cast<uint8_t>(v));
+                    m_voices[v].active = false;
+                    m_voices[v].sustained = false;
+                    m_voices[v].keyOnDelay = 0;
+                    if (m_voices[v].pegStage < 2) m_voices[v].pegStage = 2;
+                }
+            }
+        }
+        else if (status == 0xB0 && (ev.data1 == 126 || ev.data1 == 127)) {
+            // MONO mode ON (126) / POLY mode ON (127) — manual
+            // 4-1-2 b, received only when MIDI CH INFO is ON (the
+            // CH-INFO gate sits in the device layer).
+            setMono(ev.data1 == 126);
         }
         else if (status == 0xE0) {
             // Pitch Bend: 14-bit value (data2 MSB, data1 LSB)
@@ -831,6 +881,7 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
     // aus dem vorherigen processBlock-Aufruf werden zuerst konsumiert.
     processMidiBuffer();
     updatePortamento(numSamples);
+    updatePitchEG(numSamples);
 
     // Process pending KeyOns: countdown and send when delay expires.
     // This gives the TL ramp time to reach near-max attenuation before
@@ -876,12 +927,15 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
 
         float rawL = static_cast<float>(sumL) / cycles * kScale;
         float rawR = static_cast<float>(sumR) / cycles * kScale;
-        // FUNCTION #30 "Foot Volume": CC#4 scales the output level.
-        // m_footVolume is 127 (unity) unless the feature is enabled
-        // and a pedal value has been received. Plain int read — the
-        // MIDI consumer (processMidiBuffer) runs on this same audio
-        // thread, so there is no race.
-        const float footGain = static_cast<float>(m_footVolume) / 127.0f;
+        // FUNCTION B6 "Foot Volume": CC#7 scales the output level
+        // within the configured control range (0 = pedal off,
+        // 99 = full span down to silence):
+        //   gain = 1 - (range/99) * (1 - cc7/127)
+        // Plain int reads — the MIDI consumer (processMidiBuffer)
+        // runs on this same audio thread, so there is no race.
+        const float footGain = 1.0f -
+            (static_cast<float>(m_footVolumeRange) / 99.0f) *
+            (1.0f - static_cast<float>(m_footVolume) / 127.0f);
         outputL[i] = rawL * m_masterGain * footGain;
         outputR[i] = rawR * m_masterGain * footGain;
     }
@@ -1068,8 +1122,31 @@ void COPMEmu::setupVoice(int voice, int note, int velocity, const DX21_Patch& pa
     m_voices[voice].velocity = velocity;
     m_voices[voice].age = m_voiceAge++;
 
-    // Portamento: if active and voice already has a pitch, glide from there
-    bool shouldPorta = (m_portaMode != PortaOff);
+    // --- Pitch EG: copy the effective PEG from the patch into the
+    // voice so the audio loop never has to look up the patch. A flat
+    // PEG (all levels 50, incl. the legacy all-zero sentinel) parks
+    // the EG in the idle stage so updatePitchEG() skips the voice.
+    {
+        Voice& v = m_voices[voice];
+        bool flat = true;
+        for (int i = 0; i < 3; ++i) {
+            v.pegR[i] = patch.peg_r[i] > 99 ? 99 : patch.peg_r[i];
+            v.pegL[i] = dx21_effective_peg_level(&patch, i);
+            if (v.pegL[i] != 50) flat = false;
+        }
+        if (flat) {
+            v.pegLevel = 50.0f;
+            v.pegStage = 3;          // idle: no pitch offset, no work
+        } else {
+            v.pegLevel = static_cast<float>(v.pegL[2]);  // start at PL3
+            v.pegStage = 0;          // attack: move toward PL1
+        }
+    }
+
+    // Portamento: if active and voice already has a pitch, glide from
+    // there. CC#65 (portamento footswitch, gated by FUNCTION B5) can
+    // veto the effect via m_portaSwitch.
+    bool shouldPorta = (m_portaMode != PortaOff) && m_portaSwitch;
     if (shouldPorta && m_voices[voice].currentPitch != 0.0f) {
         if (m_portaMode == PortaFingered) {
             // Fingered: only portamento if legato (voice was already active)
@@ -1138,8 +1215,11 @@ void COPMEmu::completeKeyOn(int voice)
         }
     }
 
-    // Step 1: Write KC/KF WITHOUT KeyOn
-    writeFrequency(voice, m_voices[voice].currentPitch, false);
+    // Step 1: Write KC/KF WITHOUT KeyOn. applyPitchToVoice folds in
+    // pitch bend, breath bias and the Pitch-EG start level (PL3), so
+    // a PEG voice starts at the right pitch instead of jumping after
+    // the first audio block.
+    applyPitchToVoice(voice);
 
     // Step 2: Apply target TL with OPP ramp (fade-in from silence)
     applyTL(voice, *patch, transposed, m_voices[voice].velocity, tlOffset);
@@ -1373,6 +1453,70 @@ void COPMEmu::updatePortamento(int numSamples)
     }
 }
 
+// ===========================================================================
+// updatePitchEG — advance the per-voice Pitch EG (VCED 87-92)
+//
+// The real DX21 implements the PEG in firmware by re-writing KC/KF —
+// the YM2164 has no pitch envelope — and we do the same here, once
+// per audio block (like updatePortamento).
+//
+// Stages: 0 = move toward PL1 (key on), 1 = move toward PL2 and
+// sustain there, 2 = move toward PL3 (key released), 3 = idle.
+// Levels are DX21 units (0..99, 50 = center, ±0.96 st per unit).
+//
+// Rate → speed mapping (approximation; the manual only specifies
+// "99 = instantaneous, 0 = slowest"): a full 0→99 sweep takes
+//   T = 10 ms * 2^((99 - rate) / 10)
+// i.e. ~10 ms at rate 99 (plus the instant-snap special case) up to
+// ~10 s at rate 0. Tune against the original ROM if needed.
+// ===========================================================================
+void COPMEmu::updatePitchEG(int numSamples)
+{
+    const float dt = static_cast<float>(numSamples) / static_cast<float>(kSampleRate);
+
+    for (int v = 0; v < kNumVoices; ++v) {
+        Voice& vc = m_voices[v];
+        if (vc.pegStage >= 3) continue;
+        // Inactive voices still run the release stage (2) so the
+        // pitch glides toward PL3 while the OPM release rings out.
+        if (!vc.active && vc.pegStage != 2) continue;
+
+        const int stage = vc.pegStage;
+        const float target = static_cast<float>(vc.pegL[stage == 0 ? 0 : (stage == 1 ? 1 : 2)]);
+        const uint8_t rate = vc.pegR[stage];
+
+        if (vc.pegLevel == target) {
+            // Already at the stage target: advance out of transient
+            // stages; stage 1 sustains at PL2 with zero work.
+            if (stage == 0) vc.pegStage = 1;
+            else if (stage == 2) vc.pegStage = 3;
+            continue;
+        }
+
+        float next;
+        if (rate >= 99) {
+            next = target;  // instantaneous
+        } else {
+            const float sweepSec = 0.010f * std::pow(2.0f, (99.0f - rate) / 10.0f);
+            const float step = (99.0f / sweepSec) * dt;  // level units this block
+            if (vc.pegLevel < target) {
+                next = vc.pegLevel + step;
+                if (next > target) next = target;
+            } else {
+                next = vc.pegLevel - step;
+                if (next < target) next = target;
+            }
+        }
+        vc.pegLevel = next;
+
+        if (next == target) {
+            if (stage == 0)      vc.pegStage = 1;  // on to PL2
+            else if (stage == 2) vc.pegStage = 3;  // release done
+        }
+        applyPitchToVoice(v);
+    }
+}
+
 void COPMEmu::setMasterGain(float gain)
 {
     if (gain < 0.0f) gain = 0.0f;
@@ -1407,6 +1551,8 @@ void COPMEmu::allNotesOff()
         m_voices[v].targetPitch  = 0.0f;
         m_voices[v].isPorting    = false;
         m_voices[v].attackSamples = 0;
+        m_voices[v].pegLevel = 50.0f;
+        m_voices[v].pegStage = 3;
     }
 }
 
@@ -1441,7 +1587,20 @@ const DX21_Patch* COPMEmu::GetInitVoicePatch() {
             { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
             { 31, 31, 0, 4, 0, 0, 0, 0, 0, 0,  0,  1, 3 },
         },
-        "Init Voice"
+        "Init Voice",
+        // Per-voice function data (VCED 63-76), manual "INITIALIZED
+        // VOICE DATA LIST": mono off, PB range 2, porta off/0,
+        // foot volume range 0, sustain+porta footswitches on,
+        // chorus off, MW pitch 50, MW amp 0, BC all 0 except
+        // pitch bias center 50.
+        /*mono*/ 0, /*pb_range*/ 2, /*porta_mode*/ 0, /*porta_time*/ 0,
+        /*foot_volume*/ 0, /*sus_fs*/ 1, /*porta_fs*/ 1, /*chorus*/ 0,
+        /*mw_pitch*/ 50, /*mw_amp*/ 0,
+        /*bc_pitch*/ 0, /*bc_amp*/ 0, /*bc_pbias*/ 50, /*bc_ebias*/ 0,
+        // Pitch EG: instant rates, flat levels (no effect)
+        /*peg_r*/ {99, 99, 99}, /*peg_l*/ {50, 50, 50},
+        // All four operators enabled
+        /*op_enable*/ 0x0F
     };
     return &kInitVoice;
 }
@@ -1838,12 +1997,13 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
     // request), n = device number (ignored — we answer on any device).
     uint8_t subStatus = data[2] & 0x70;
 
-    // Yamaha Dump Request: F0 43 2n ff F7. The DX21 answers with the
-    // matching dump when FUNCTION #5 "Midi Sy Info" is ON. ff = 0x03
-    // requests the current voice (1-voice VCED), ff = 0x09 the
-    // 32-voice bulk. The reply goes out through the SysEx-out
-    // callback on the MIDI/main thread — never the audio callback,
-    // so the std::vector heap use here is fine.
+    // Yamaha Dump Request: F0 43 2n ff F7 (manual 4-2-2 (5)). The
+    // DX21 answers with the matching dump when FUNCTION #5 "Midi Sy
+    // Info" is ON. f=3 requests the current voice (1-voice VCED-93),
+    // f=4 the 32-voice VMEM bulk (4096 bytes). f=9 is kept as a
+    // legacy alias for the bulk. The reply goes out through the
+    // SysEx-out callback on the MIDI/main thread — never the audio
+    // callback, so the std::vector heap use here is fine.
     if (subStatus == 0x20) {
         if (data[size - 1] != 0xF7) return;
         if (!m_sysexInfoOn || !m_sysexOutFn) return;
@@ -1851,7 +2011,7 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
         std::vector<uint8_t> reply;
         if (format == 0x03) {
             if (!exportCurrentVoiceSysex(reply)) return;
-        } else if (format == 0x09) {
+        } else if (format == 0x04 || format == 0x09) {
             if (!m_memory.exportSysex(reply)) return;
         } else {
             return;
@@ -1884,9 +2044,10 @@ void COPMEmu::handleSysex(const uint8_t* data, int size)
         return;
     }
 
-    // DX21 32-voice VCED Bulk Dump: F0 43 0n 09 ... F7
-    // Handled by CDX21Memory::importSysex — just pass it through here.
-    if (modelId == 0x09) {
+    // 32-voice bulk dump: real DX21 VMEM (F0 43 0n 04, 4096 bytes)
+    // or legacy microDX21 format (F0 43 0n 09, 2432 bytes). Format
+    // validation and dispatch happen in CDX21Memory::importSysex.
+    if (modelId == 0x04 || modelId == 0x09) {
         // FUNCTION #23 (Memory Protect): bulk dump is a write to all 32
         // RAM voices. Reject when protected.
         if (m_memoryProt) {
@@ -1938,144 +2099,133 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
 
     if (m_memoryProt) return;  // FUNCTION #23: real-time param is a write
 
-    // Update RAM patch so the change persists
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
     if (!ramPatch) return;
 
-    // --- Global parameters ---
-    if (paramIndex == 0) {
-        // Algorithm
-        ramPatch->alg = value & 0x07;
-        writeField(0x20 + voice, 0, 3, ramPatch->alg);
-    }
-    else if (paramIndex == 1) {
-        // Feedback
-        ramPatch->fb = value & 0x07;
-        writeField(0x20 + voice, 3, 3, ramPatch->fb);
-    }
-    else if (paramIndex == 2) {
-        // LFO Speed
-        ramPatch->lfo_speed = value;
-        writeReg(0x18, ramPatch->lfo_speed);
-    }
-    else if (paramIndex == 3) {
-        // LFO Delay (not a direct OPM register; store in patch only)
-        ramPatch->lfo_delay = value & 0x7F;
-    }
-    else if (paramIndex == 4) {
-        // PMD
-        ramPatch->pmd = value & 0x7F;
-        writeReg(0x19, (ramPatch->pmd & 0x7F) | 0x80);
-    }
-    else if (paramIndex == 5) {
-        // AMD
-        ramPatch->amd = value & 0x7F;
-        writeReg(0x19, ramPatch->amd & 0x7F);
-    }
-    else if (paramIndex == 6) {
-        // LFO Sync
-        ramPatch->lfo_sync = value & 0x01;
-    }
-    else if (paramIndex == 7) {
-        // LFO Waveform
-        ramPatch->lfo_wave = value & 0x03;
-        writeField(0x1B, 0, 2, ramPatch->lfo_wave);
-    }
-    else if (paramIndex == 8) {
-        // PMS (upper nibble) + AMS (lower nibble)
-        ramPatch->pms = (value >> 4) & 0x07;
-        ramPatch->ams = value & 0x03;
-        writeReg(0x38 + voice, ((ramPatch->pms & 0x07) << 4) | (ramPatch->ams & 0x03));
-    }
-    else if (paramIndex == 9) {
-        // Transpose
-        ramPatch->key_offset = static_cast<int8_t>(value) - 24;
-    }
-    else if (paramIndex >= 10 && paramIndex < 66) {
-        // Operator parameters
-        int opParam = paramIndex - 10;
-        int op = opParam / 14;
-        int sub = opParam % 14;
-        if (op < 0 || op > 3) return;
+    // ── Real DX21 VCED parameter numbering (manual table 5-2) ──────
+    //
+    // 0-51: four operator blocks of 13 params each, wire order
+    //       OP4, OP2, OP3, OP1 (internal op indices 3, 1, 2, 0).
+    //       Within a block: AR, D1R, D2R, RR, D1L, LS, RS, EBS, AME,
+    //       KVS, OUT, FREQ, DET — mapped onto writeVcedOperator()'s
+    //       internal param ids below.
+    // 52-76: voice globals + per-voice function data (table 5-2).
+    // 77-86: voice name (10 ASCII chars).
+    // 87-92: Pitch EG (PR1-3, PL1-3).
+    // 93:    operator enable mask (function param table 5-3).
+    //
+    // writeVcedOperator/writeVcedGlobal update both the RAM patch
+    // and the OPM registers and re-check Memory Protect themselves.
 
-        DX21_Operator& o = ramPatch->op[op];
-        int slot = voice + OP_SLOT[op];
+    if (paramIndex >= 0 && paramIndex < 52) {
+        static const int kWireToInternalOp[4] = { 3, 1, 2, 0 };
+        // VCED in-block order → writeVcedOperator internal param id
+        static const int kVcedOpParam[13] =
+            { 0, 2, 1, 3, 8, 5, 6, 7, 13, 9, 10, 11, 12 };
+        int block = paramIndex / 13;
+        int sub   = paramIndex % 13;
+        if (sub == 12 && value > 6) value = 6;  // DET wire range is 0-7
+        writeVcedOperator(kWireToInternalOp[block], kVcedOpParam[sub], value);
+        return;
+    }
 
-        switch (sub) {
-            case 0: // AR
-                o.ar = value & 0x1F;
-                writeField(0x80 + slot, 0, 5, o.ar);
-                break;
-            case 1: // D1R
-                o.d1r = value & 0x1F;
-                writeField(0xA0 + slot, 0, 5, o.d1r);
-                break;
-            case 2: // D2R
-                o.d2r = value & 0x1F;
-                writeField(0xC0 + slot, 0, 5, o.d2r);
-                break;
-            case 3: // RR
-                o.rr = value & 0x0F;
-                writeField(0xE0 + slot, 0, 4, o.rr);
-                break;
-            case 4: // D1L
-                o.d1l = value & 0x0F;
-                writeField(0xE0 + slot, 4, 4, o.d1l);
-                break;
-            case 5: // LS
-                o.ls = value;
-                break;
-            case 6: // RS
-                o.rs = value & 0x03;
-                writeField(0x80 + slot, 6, 2, o.rs);
-                break;
-            case 7: // EBS
-                o.ebs = value & 0x07;
-                break;
-            case 8: // AME
-                o.ame = value & 0x01;
-                writeField(0xA0 + slot, 7, 1, o.ame);
-                break;
-            case 9: // KVS
-                o.kvs = value & 0x07;
-                break;
-            case 10: // OUT (Output Level → TL)
-                o.out = value;
-                {
-                    uint8_t tl = (99 - o.out) * 127 / 99;
-                    if (tl > 127) tl = 127;
-                    writeReg(0x60 + slot, 0x80 | (tl & 0x7F));
+    switch (paramIndex) {
+        case 52: writeVcedGlobal(0, value); break;              // ALGORITHM
+        case 53: writeVcedGlobal(1, value); break;              // FEEDBACK
+        case 54: // LFO SPEED: wire 0-99 → internal LFRQ 0-255
+            writeVcedGlobal(6, (uint8_t)(((value > 99 ? 99 : value) * 255 + 49) / 99));
+            break;
+        case 55: writeVcedGlobal(7, value); break;              // LFO DELAY
+        case 56: writeVcedGlobal(8, value); break;              // PMD
+        case 57: writeVcedGlobal(9, value); break;              // AMD
+        case 58: writeVcedGlobal(10, value); break;             // LFO SYNC
+        case 59: writeVcedGlobal(11, value); break;             // LFO WAVE
+        case 60: // PMS — keep current AMS
+            writeVcedGlobal(12, (uint8_t)(((value & 0x07) << 4) | (ramPatch->ams & 0x03)));
+            break;
+        case 61: // AMS — keep current PMS
+            writeVcedGlobal(12, (uint8_t)(((ramPatch->pms & 0x07) << 4) | (value & 0x03)));
+            break;
+        case 62: writeVcedGlobal(13, value > 48 ? 48 : value); break; // TRANSPOSE
+
+        // Per-voice function data (also mirrored into the live engine
+        // state so the change is audible immediately, like on the
+        // original hardware).
+        case 63: ramPatch->mono = value & 1; setMono(value & 1); break;
+        case 64:
+            ramPatch->pb_range = value > 12 ? 12 : value;
+            setPitchBendRange(ramPatch->pb_range);
+            break;
+        case 65: // PORTAMENTO MODE: 0=full time, 1=fingered
+            ramPatch->porta_mode = value & 1;
+            setPortamentoMode((value & 1) ? 2 : 1);
+            break;
+        case 66:
+            ramPatch->porta_time = value > 99 ? 99 : value;
+            setPortamentoRate(ramPatch->porta_time);
+            break;
+        case 67:
+            ramPatch->foot_volume = value > 99 ? 99 : value;
+            setFootVolumeRange(ramPatch->foot_volume);
+            break;
+        case 68: ramPatch->sus_fs = value & 1;   setFootSustainOn(value & 1); break;
+        case 69: ramPatch->porta_fs = value & 1; setFootPortaOn(value & 1);   break;
+        case 70: ramPatch->chorus = value & 1;   setEnsembleOn(value & 1);    break;
+        case 71:
+            ramPatch->mw_pitch = value > 99 ? 99 : value;
+            setMWPitchRange(ramPatch->mw_pitch);
+            break;
+        case 72:
+            ramPatch->mw_amp = value > 99 ? 99 : value;
+            setMWAmpRange(ramPatch->mw_amp);
+            break;
+        case 73:
+            ramPatch->bc_pitch = value > 99 ? 99 : value;
+            setBreathPitch(ramPatch->bc_pitch);
+            break;
+        case 74:
+            ramPatch->bc_amp = value > 99 ? 99 : value;
+            setBreathAmplitude(ramPatch->bc_amp);
+            break;
+        case 75:
+            ramPatch->bc_pbias = value > 99 ? 99 : value;
+            setBreathPitchBias(ramPatch->bc_pbias);
+            break;
+        case 76:
+            ramPatch->bc_ebias = value > 99 ? 99 : value;
+            setBreathEGBias(ramPatch->bc_ebias);
+            break;
+
+        // 87-92: Pitch EG. Stored in the patch; picked up by the next
+        // key-on (setupVoice copies the effective PEG into the voice).
+        case 87: case 88: case 89:
+            ramPatch->peg_r[paramIndex - 87] = value > 99 ? 99 : value;
+            break;
+        case 90: case 91: case 92:
+            ramPatch->peg_l[paramIndex - 90] = value > 99 ? 99 : value;
+            break;
+
+        // 93: operator enable/disable (function param table 5-3).
+        // Bits 3..0 = OP1..OP4. Re-apply TL to active voices of the
+        // edited program so the change is audible immediately.
+        case 93:
+            ramPatch->op_enable = value & 0x0F;
+            if (m_currentPatch == voice) {
+                for (int v = 0; v < kNumVoices; ++v) {
+                    if (m_voices[v].active) {
+                        applyTL(v, *ramPatch, m_voices[v].note,
+                                m_voices[v].velocity);
+                    }
                 }
-                break;
-            case 11: // CRS (Coarse Ratio → MUL)
-                o.crs = value & 0x3F;
-                {
-                    uint8_t mul = CRS_TO_MUL[o.crs & 0x3F];
-                    writeField(0x40 + slot, 0, 4, mul);
-                }
-                break;
-            case 12: // DET (Detune → DT1)
-                o.det = value & 0x07;
-                {
-                    uint8_t dt1 = DET_TO_DT1[o.det];
-                    writeField(0x40 + slot, 4, 3, dt1);
-                }
-                break;
-            default:
-                break;
-        }
-    }
-    else if (paramIndex >= 66 && paramIndex < 74) {
-        // Name characters (not mapped to OPM registers)
-        int nameIdx = paramIndex - 66;
-        if (nameIdx >= 0 && nameIdx < 8) {
-            ramPatch->name[nameIdx] = static_cast<char>(value);
-        }
-    }
-    else if (paramIndex == 74) {
-        // Pitch Bend Range (performance parameter)
-        m_pbRange = value & 0x7F;
-        if (m_pbRange > 12) m_pbRange = 12;
+            }
+            break;
+
+        default:
+            if (paramIndex >= 77 && paramIndex <= 86) {  // VOICE NAME
+                ramPatch->name[paramIndex - 77] = (char)(value & 0x7F);
+                ramPatch->name[10] = '\0';
+            }
+            break;
     }
 }
 
@@ -2147,6 +2297,17 @@ void COPMEmu::writeVcedGlobal(int param, uint8_t value)
             // 0..1 normalised, and we map to 0..48 with +24 centre.
             ramPatch->key_offset = (int8_t)((int)value - 24);
             break;
+
+        // Pitch EG (VCED 87-92). Firmware-side feature — no OPM
+        // register; stored in the patch and picked up by the next
+        // key-on (setupVoice copies the effective PEG per voice).
+        case 14: ramPatch->peg_r[0] = value > 99 ? 99 : value; break; // PR1
+        case 15: ramPatch->peg_r[1] = value > 99 ? 99 : value; break; // PR2
+        case 16: ramPatch->peg_r[2] = value > 99 ? 99 : value; break; // PR3
+        case 17: ramPatch->peg_l[0] = value > 99 ? 99 : value; break; // PL1
+        case 18: ramPatch->peg_l[1] = value > 99 ? 99 : value; break; // PL2
+        case 19: ramPatch->peg_l[2] = value > 99 ? 99 : value; break; // PL3
+
         default:
             break;
     }

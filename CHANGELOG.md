@@ -9,6 +9,58 @@ All notable changes to microDX21, in reverse chronological order.
 > Synth engine, Memory Protect, Build, Fixed, and Test coverage
 > sub-sections further down describe the **post-0.1.0** work.
 
+### Added (post-0.1.0, manual-comparison pass — hardware SysEx, PEG, op switches, CC)
+- **Hardware-DX21-compatible SysEx** (the previous formats were
+  project-internal and did not match the owner's manual):
+  - 1-voice VCED dump: format 0x03 with **93 data bytes** (manual
+    table 5-2) including per-voice function data (poly/mono, PB
+    range, porta, foot, MW/BC ranges, chorus), the 10-char voice
+    name and the Pitch EG. Wire operator-block order OP4, OP2, OP3,
+    OP1.
+  - 32-voice bulk dump: format **0x04** with **4096 data bytes**
+    (73-byte packed VMEM per voice + 55 zero pad, manual table 5-1).
+    Standard DX21/DX27/DX100 `.syx` banks now import, and exported
+    banks load into real hardware and editors.
+  - Checksum: two's complement of the data sum (was: plain sum).
+  - Dump requests: f=3 (voice) and f=4 (bulk) per the manual; f=9
+    kept as legacy alias. The legacy project formats (0x09 bulk,
+    76-byte VCED records) remain importable, receive-only.
+  - Real-time parameter change (modelId 0x12) renumbered to the real
+    VCED layout 0–92 + function param 93 (operator enable);
+    `kSysexNumParams` 76 → 94. Param changes to function data
+    (63–76) are mirrored into the live engine state.
+  - `DX21_Patch` extended with the per-voice function fields, PEG
+    and op-enable (appended after `name` so the 128 factory-patch
+    initializers stay valid; legacy zero values are interpreted via
+    sentinel accessors `dx21_effective_peg_level()` /
+    `dx21_op_enabled()`). JSON persistence round-trips the new
+    fields; old JSON files load with defaults.
+- **Pitch EG (VCED 87-92, EDIT entries 22-27)**: PR1-3/PL1-3
+  implemented firmware-side like the original (the YM2164 has no
+  pitch envelope): per-voice stages PL3→PL1→PL2(sustain)→PL3 advanced
+  once per audio block, folded into the KC/KF writes next to pitch
+  bend, portamento and breath bias. The release stage keeps gliding
+  while the OPM release rings out. Levels: 50 = center,
+  ±0.96 st/unit (≈ ±4 octaves); rates: 99 = instant, full sweep
+  ≈ 10 ms × 2^((99-r)/10). EDIT-mode entries 22-27 are now live
+  (`kParamPEGR1..kParamPEGL3`).
+- **Operator ON/OFF** (panel A1-A4 / SysEx function param 93):
+  per-patch enable mask (TX81Z bit order b3..b0 = OP1..OP4); a
+  disabled operator is muted via max attenuation in `applyTL()`.
+  Live changes to the edited program re-apply TL to active voices.
+- **MIDI CC reception completed** (manual 4-1-1/4-1-2): CC#5
+  portamento time, CC#7 foot volume (was wrongly listening on CC#4),
+  CC#65 portamento footswitch (gated by FUNCTION B5 "Foot Porta",
+  new `kParamFootPorta` binding), CC#123 all notes off, CC#126/127
+  mono/poly mode. **Foot Volume (B6) is now a control range 0-99**
+  per the manual (gain = 1 - range/99 × (1 - cc7/127)), not an
+  on/off switch.
+- `tests/test_sysex_dump.cpp` extended to 13 scenarios: VCED-93 and
+  VMEM-4096 round-trips, two's-complement checksum validation,
+  Memory Protect, dump requests f=3/f=4, Sy-Info gating, VCED
+  param-change numbering (incl. wire op order), operator enable,
+  foot sustain, CC#5/CC#123, Pitch EG smoke test.
+
 ### Added (post-0.1.0, June 2026 gap-closing pass)
 - **OP2–4 editing in EDIT mode**: triple-click on the encoder cycles
   the target operator (OP1 → OP2 → OP3 → OP4); the per-operator EDIT

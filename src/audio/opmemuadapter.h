@@ -164,9 +164,18 @@ enum DX21ParamIndex {
     // Appended at the end so the existing indices stay stable.
     kParamMidiSwitch,       // 0/1 (FUNCTION #3: master MIDI receive)
     kParamReceiveCh,        // 0..16 (FUNCTION #6/#7: 0=Omni, 1..16=ch)
-    kParamFootVolume,       // 0/1 (FUNCTION #30: CC#4 → output level)
-    kParamFootSustain,      // 0/1 (FUNCTION #31: CC#64 enable)
+    kParamFootVolume,       // 0..99 (FUNCTION #30 / B6: CC#7 control range)
+    kParamFootSustain,      // 0/1 (FUNCTION #31 / B7: CC#64 enable)
     kParamBreathPitch,      // 0..99 (FUNCTION #35: BC → LFO PMD range)
+
+    // Foot Porta + Pitch EG. 93..99.
+    kParamFootPorta,        // 0/1 (FUNCTION #32 / B5: CC#65 enable)
+    kParamPEGR1,            // 0..99 (EDIT: PEG RATE 1)
+    kParamPEGL1,            // 0..99 (EDIT: PEG LEVEL 1)
+    kParamPEGR2,            // 0..99 (EDIT: PEG RATE 2)
+    kParamPEGL2,            // 0..99 (EDIT: PEG LEVEL 2)
+    kParamPEGR3,            // 0..99 (EDIT: PEG RATE 3)
+    kParamPEGL3,            // 0..99 (EDIT: PEG LEVEL 3)
 
     kParamTotalCount
 };
@@ -488,9 +497,19 @@ public:
             // MIDI receive routing + foot controller + breath pitch.
             case kParamMidiSwitch:     m_synth->setMidiSwitchOn(value > 0.5f); break;
             case kParamReceiveCh:      m_synth->setMidiReceiveChannel((int)(value * 16.99f)); break;
-            case kParamFootVolume:     m_synth->setFootVolumeOn(value > 0.5f); break;
+            case kParamFootVolume:     m_synth->setFootVolumeRange((int)(value * 99.0f)); break;
             case kParamFootSustain:    m_synth->setFootSustainOn(value > 0.5f); break;
             case kParamBreathPitch:    m_synth->setBreathPitch((int)(value * 99.0f)); break;
+            case kParamFootPorta:      m_synth->setFootPortaOn(value > 0.5f); break;
+
+            // Pitch EG (VCED 87-92) — writes through writeVcedGlobal's
+            // internal ids 14..19 (Memory Protect enforced there).
+            case kParamPEGR1: m_synth->writeVcedGlobal(14, (uint8_t)(value * 99.0f)); break;
+            case kParamPEGR2: m_synth->writeVcedGlobal(15, (uint8_t)(value * 99.0f)); break;
+            case kParamPEGR3: m_synth->writeVcedGlobal(16, (uint8_t)(value * 99.0f)); break;
+            case kParamPEGL1: m_synth->writeVcedGlobal(17, (uint8_t)(value * 99.0f)); break;
+            case kParamPEGL2: m_synth->writeVcedGlobal(18, (uint8_t)(value * 99.0f)); break;
+            case kParamPEGL3: m_synth->writeVcedGlobal(19, (uint8_t)(value * 99.0f)); break;
 
             default:
                 break;
@@ -628,9 +647,24 @@ public:
             // MIDI receive routing + foot controller + breath pitch.
             case kParamMidiSwitch:    return m_synth->getMidiSwitchOn()  ? 1.0f : 0.0f;
             case kParamReceiveCh:     return (float)m_synth->getMidiReceiveChannel() / 16.0f;
-            case kParamFootVolume:    return m_synth->getFootVolumeOn()  ? 1.0f : 0.0f;
+            case kParamFootVolume:    return (float)m_synth->getFootVolumeRange() / 99.0f;
             case kParamFootSustain:   return m_synth->getFootSustainOn() ? 1.0f : 0.0f;
             case kParamBreathPitch:   return (float)m_synth->getBreathPitch() / 99.0f;
+            case kParamFootPorta:     return m_synth->getFootPortaOn() ? 1.0f : 0.0f;
+
+            // Pitch EG — read from the current patch.
+            case kParamPEGR1: case kParamPEGR2: case kParamPEGR3: {
+                const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                if (!p) return 1.0f;  // default rate 99
+                int i = (index == kParamPEGR1) ? 0 : (index == kParamPEGR2 ? 1 : 2);
+                return (float)(p->peg_r[i] > 99 ? 99 : p->peg_r[i]) / 99.0f;
+            }
+            case kParamPEGL1: case kParamPEGL2: case kParamPEGL3: {
+                const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+                if (!p) return 50.0f / 99.0f;  // default level 50 (flat)
+                int i = (index == kParamPEGL1) ? 0 : (index == kParamPEGL2 ? 1 : 2);
+                return (float)dx21_effective_peg_level(p, i) / 99.0f;
+            }
 
             // Global LFO modulation sensitivity.
             case kParamPMS: {
@@ -703,6 +737,10 @@ public:
             // Receive routing + foot + breath pitch (88-92)
             "MIDI Switch", "Receive Ch", "Foot Volume", "Foot Sustain",
             "BC Pitch",
+            // Foot porta + Pitch EG (93-99)
+            "Foot Porta",
+            "PEG Rate 1", "PEG Level 1", "PEG Rate 2", "PEG Level 2",
+            "PEG Rate 3", "PEG Level 3",
         };
         if (index < 0 || index >= kParamTotalCount) return "?";
         return kNames[index];

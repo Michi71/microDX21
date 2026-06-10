@@ -177,8 +177,26 @@ std::string CDX21Memory::patchToJson(int slot, const DX21_Patch& patch) const {
             o.out, o.crs, o.det, (op < 3) ? "," : "");
     }
 
+    // Per-voice function data (VCED 63-76), Pitch EG and op-enable.
+    // Written after the operators so older readers simply ignore it;
+    // jsonToPatch treats every key as optional.
     pos += std::snprintf(buf + pos, sizeof(buf) - pos,
-        "  ]\n}\n");
+        "  ],\n"
+        "  \"mono\": %d, \"pb_range\": %d, \"porta_mode\": %d, \"porta_time\": %d,\n"
+        "  \"foot_volume\": %d, \"sus_fs\": %d, \"porta_fs\": %d, \"chorus\": %d,\n"
+        "  \"mw_pitch\": %d, \"mw_amp\": %d,\n"
+        "  \"bc_pitch\": %d, \"bc_amp\": %d, \"bc_pbias\": %d, \"bc_ebias\": %d,\n"
+        "  \"peg_r1\": %d, \"peg_r2\": %d, \"peg_r3\": %d,\n"
+        "  \"peg_l1\": %d, \"peg_l2\": %d, \"peg_l3\": %d,\n"
+        "  \"op_enable\": %d\n"
+        "}\n",
+        patch.mono, patch.pb_range, patch.porta_mode, patch.porta_time,
+        patch.foot_volume, patch.sus_fs, patch.porta_fs, patch.chorus,
+        patch.mw_pitch, patch.mw_amp,
+        patch.bc_pitch, patch.bc_amp, patch.bc_pbias, patch.bc_ebias,
+        patch.peg_r[0], patch.peg_r[1], patch.peg_r[2],
+        patch.peg_l[0], patch.peg_l[1], patch.peg_l[2],
+        patch.op_enable);
 
     return std::string(buf);
 }
@@ -228,6 +246,33 @@ bool CDX21Memory::jsonToPatch(const std::string& json, DX21_Patch& outPatch) con
     int pms = parseInt("pms");    if (pms != -9999) p.pms = pms;
     int ams = parseInt("ams");    if (ams != -9999) p.ams = ams;
     int ko  = parseInt("key_offset"); if (ko != -9999) p.key_offset = (int8_t)ko;
+
+    // Per-voice function data / PEG / op-enable. All optional —
+    // older JSON files simply leave the zero defaults (the PEG and
+    // op-enable zero sentinels read as "flat" / "all on", see
+    // patches.h).
+    int v2;
+    v2 = parseInt("mono");        if (v2 != -9999) p.mono        = (uint8_t)v2;
+    v2 = parseInt("pb_range");    if (v2 != -9999) p.pb_range    = (uint8_t)v2;
+    v2 = parseInt("porta_mode");  if (v2 != -9999) p.porta_mode  = (uint8_t)v2;
+    v2 = parseInt("porta_time");  if (v2 != -9999) p.porta_time  = (uint8_t)v2;
+    v2 = parseInt("foot_volume"); if (v2 != -9999) p.foot_volume = (uint8_t)v2;
+    v2 = parseInt("sus_fs");      if (v2 != -9999) p.sus_fs      = (uint8_t)v2;
+    v2 = parseInt("porta_fs");    if (v2 != -9999) p.porta_fs    = (uint8_t)v2;
+    v2 = parseInt("chorus");      if (v2 != -9999) p.chorus      = (uint8_t)v2;
+    v2 = parseInt("mw_pitch");    if (v2 != -9999) p.mw_pitch    = (uint8_t)v2;
+    v2 = parseInt("mw_amp");      if (v2 != -9999) p.mw_amp      = (uint8_t)v2;
+    v2 = parseInt("bc_pitch");    if (v2 != -9999) p.bc_pitch    = (uint8_t)v2;
+    v2 = parseInt("bc_amp");      if (v2 != -9999) p.bc_amp      = (uint8_t)v2;
+    v2 = parseInt("bc_pbias");    if (v2 != -9999) p.bc_pbias    = (uint8_t)v2;
+    v2 = parseInt("bc_ebias");    if (v2 != -9999) p.bc_ebias    = (uint8_t)v2;
+    v2 = parseInt("peg_r1");      if (v2 != -9999) p.peg_r[0]    = (uint8_t)v2;
+    v2 = parseInt("peg_r2");      if (v2 != -9999) p.peg_r[1]    = (uint8_t)v2;
+    v2 = parseInt("peg_r3");      if (v2 != -9999) p.peg_r[2]    = (uint8_t)v2;
+    v2 = parseInt("peg_l1");      if (v2 != -9999) p.peg_l[0]    = (uint8_t)v2;
+    v2 = parseInt("peg_l2");      if (v2 != -9999) p.peg_l[1]    = (uint8_t)v2;
+    v2 = parseInt("peg_l3");      if (v2 != -9999) p.peg_l[2]    = (uint8_t)v2;
+    v2 = parseInt("op_enable");   if (v2 != -9999) p.op_enable   = (uint8_t)v2;
 
     // Parse operators
     const char* opSection = std::strstr(s, "\"operators\"");
@@ -589,78 +634,392 @@ bool CDX21Memory::patchToVced(const DX21_Patch& patch, uint8_t* vced76) const {
     return true;
 }
 
+// ===========================================================================
+// Real DX21 SysEx formats (owner's manual, MIDI DATA FORMAT)
+//
+// Operator block order ON THE WIRE is OP4, OP2, OP3, OP1 (tables
+// 5-1/5-2) — kWireOpOrder maps wire block index → internal op index
+// (internal 0..3 = panel OP1..OP4).
+//
+// Scaling notes:
+//   - VCED 54 LFO SPEED is 0..99; the engine stores the YM2151 LFRQ
+//     value 0..255 → scaled on both directions.
+//   - pmd/amd/lfo_delay are stored 0..127 internally but are 0..99
+//     on the wire → clamped on encode, taken raw on decode.
+//   - DET is 0..6 internally (center 3); the wire field allows 0..7
+//     → clamped to 6 on decode.
+//
+// Checksum: lowest 7 bits of the two's complement of the data-byte
+// sum (sum + checksum ≡ 0 mod 128). Note this differs from the
+// legacy project format, which used the plain sum.
+// ===========================================================================
+
+static const int kWireOpOrder[4] = { 3, 1, 2, 0 };  // OP4, OP2, OP3, OP1
+
+static inline uint8_t clamp99(int v) {
+    if (v < 0) v = 0;
+    if (v > 99) v = 99;
+    return static_cast<uint8_t>(v);
+}
+
+static inline uint8_t yamahaChecksum(const uint8_t* data, size_t len) {
+    uint8_t sum = 0;
+    for (size_t i = 0; i < len; ++i) sum += data[i];
+    return static_cast<uint8_t>((0x80 - (sum & 0x7F)) & 0x7F);
+}
+
+bool CDX21Memory::patchToVced93(const DX21_Patch& patch, uint8_t* v) const {
+    std::memset(v, 0, DX21_VCED93_SIZE);
+
+    for (int w = 0; w < 4; ++w) {
+        const DX21_Operator& o = patch.op[kWireOpOrder[w]];
+        uint8_t* d = v + w * 13;
+        d[0]  = o.ar  & 0x1F;
+        d[1]  = o.d1r & 0x1F;
+        d[2]  = o.d2r & 0x1F;
+        d[3]  = o.rr  & 0x0F;
+        d[4]  = o.d1l & 0x0F;
+        d[5]  = clamp99(o.ls);
+        d[6]  = o.rs  & 0x03;
+        d[7]  = o.ebs & 0x07;
+        d[8]  = o.ame & 0x01;
+        d[9]  = o.kvs & 0x07;
+        d[10] = clamp99(o.out);
+        d[11] = o.crs & 0x3F;
+        d[12] = o.det > 6 ? 6 : o.det;
+    }
+
+    v[52] = patch.alg & 0x07;
+    v[53] = patch.fb  & 0x07;
+    v[54] = clamp99((patch.lfo_speed * 99 + 127) / 255);
+    v[55] = clamp99(patch.lfo_delay);
+    v[56] = clamp99(patch.pmd);
+    v[57] = clamp99(patch.amd);
+    v[58] = patch.lfo_sync & 0x01;
+    v[59] = patch.lfo_wave & 0x03;
+    v[60] = patch.pms & 0x07;
+    v[61] = patch.ams & 0x07;
+    {
+        int t = patch.key_offset + 24;
+        if (t < 0) t = 0;
+        if (t > 48) t = 48;
+        v[62] = static_cast<uint8_t>(t);
+    }
+    v[63] = patch.mono & 0x01;
+    v[64] = patch.pb_range > 12 ? 12 : patch.pb_range;
+    v[65] = patch.porta_mode & 0x01;
+    v[66] = clamp99(patch.porta_time);
+    v[67] = clamp99(patch.foot_volume);
+    v[68] = patch.sus_fs & 0x01;
+    v[69] = patch.porta_fs & 0x01;
+    v[70] = patch.chorus & 0x01;
+    v[71] = clamp99(patch.mw_pitch);
+    v[72] = clamp99(patch.mw_amp);
+    v[73] = clamp99(patch.bc_pitch);
+    v[74] = clamp99(patch.bc_amp);
+    v[75] = clamp99(patch.bc_pbias);
+    v[76] = clamp99(patch.bc_ebias);
+
+    // 77-86: voice name, 10 ASCII chars, space-padded.
+    for (int i = 0; i < 10; ++i) {
+        char c = patch.name[i];
+        if (c == '\0') {
+            for (; i < 10; ++i) v[77 + i] = ' ';
+            break;
+        }
+        v[77 + i] = static_cast<uint8_t>(c) & 0x7F;
+    }
+
+    // 87-92: Pitch EG. Encode the *effective* levels so legacy
+    // patches (all-zero sentinel) export as the flat 50/50/50.
+    for (int i = 0; i < 3; ++i) {
+        v[87 + i] = clamp99(patch.peg_r[i]);
+        v[90 + i] = dx21_effective_peg_level(&patch, i);
+    }
+    return true;
+}
+
+bool CDX21Memory::vced93ToPatch(const uint8_t* v, DX21_Patch& p) const {
+    std::memset(&p, 0, sizeof(p));
+
+    for (int w = 0; w < 4; ++w) {
+        DX21_Operator& o = p.op[kWireOpOrder[w]];
+        const uint8_t* d = v + w * 13;
+        o.ar  = d[0]  & 0x1F;
+        o.d1r = d[1]  & 0x1F;
+        o.d2r = d[2]  & 0x1F;
+        o.rr  = d[3]  & 0x0F;
+        o.d1l = d[4]  & 0x0F;
+        o.ls  = clamp99(d[5]);
+        o.rs  = d[6]  & 0x03;
+        o.ebs = d[7]  & 0x07;
+        o.ame = d[8]  & 0x01;
+        o.kvs = d[9]  & 0x07;
+        o.out = clamp99(d[10]);
+        o.crs = d[11] & 0x3F;
+        o.det = d[12] > 6 ? 6 : d[12];
+    }
+
+    p.alg       = v[52] & 0x07;
+    p.fb        = v[53] & 0x07;
+    p.lfo_speed = static_cast<uint8_t>((clamp99(v[54]) * 255 + 49) / 99);
+    p.lfo_delay = clamp99(v[55]);
+    p.pmd       = clamp99(v[56]);
+    p.amd       = clamp99(v[57]);
+    p.lfo_sync  = v[58] & 0x01;
+    p.lfo_wave  = v[59] & 0x03;
+    p.pms       = v[60] & 0x07;
+    p.ams       = v[61] & 0x03;
+    p.key_offset = static_cast<int8_t>((v[62] > 48 ? 48 : v[62]) - 24);
+    p.mono       = v[63] & 0x01;
+    p.pb_range   = v[64] > 12 ? 12 : v[64];
+    p.porta_mode = v[65] & 0x01;
+    p.porta_time = clamp99(v[66]);
+    p.foot_volume= clamp99(v[67]);
+    p.sus_fs     = v[68] & 0x01;
+    p.porta_fs   = v[69] & 0x01;
+    p.chorus     = v[70] & 0x01;
+    p.mw_pitch   = clamp99(v[71]);
+    p.mw_amp     = clamp99(v[72]);
+    p.bc_pitch   = clamp99(v[73]);
+    p.bc_amp     = clamp99(v[74]);
+    p.bc_pbias   = clamp99(v[75]);
+    p.bc_ebias   = clamp99(v[76]);
+
+    int n = 0;
+    for (int i = 0; i < 10; ++i) {
+        char c = static_cast<char>(v[77 + i] & 0x7F);
+        p.name[i] = (c >= 0x20) ? c : ' ';
+        if (p.name[i] != ' ') n = i + 1;
+    }
+    p.name[n] = '\0';
+    if (n == 0) std::snprintf(p.name, sizeof(p.name), "VCED Import");
+
+    for (int i = 0; i < 3; ++i) {
+        p.peg_r[i] = clamp99(v[87 + i]);
+        p.peg_l[i] = clamp99(v[90 + i]);
+    }
+    // An incoming flat PEG (50/50/50) must stay flat even though the
+    // levels are non-zero — nothing to do, the values are stored
+    // verbatim. (The 0/0/0 sentinel only applies to legacy data.)
+
+    p.op_enable = 0x0F;  // VCED carries no op-enable; all on
+    return true;
+}
+
+bool CDX21Memory::patchToVmem(const DX21_Patch& patch, uint8_t* v) const {
+    std::memset(v, 0, DX21_VMEM_SIZE);
+
+    for (int w = 0; w < 4; ++w) {
+        const DX21_Operator& o = patch.op[kWireOpOrder[w]];
+        uint8_t* d = v + w * 10;
+        d[0] = o.ar  & 0x1F;
+        d[1] = o.d1r & 0x1F;
+        d[2] = o.d2r & 0x1F;
+        d[3] = o.rr  & 0x0F;
+        d[4] = o.d1l & 0x0F;
+        d[5] = clamp99(o.ls);
+        d[6] = static_cast<uint8_t>(((o.ame & 0x01) << 6) |
+                                    ((o.ebs & 0x07) << 3) |
+                                     (o.kvs & 0x07));
+        d[7] = clamp99(o.out);
+        d[8] = o.crs & 0x3F;
+        d[9] = static_cast<uint8_t>(((o.rs & 0x03) << 3) |
+                                     (o.det > 6 ? 6 : o.det));
+    }
+
+    v[40] = static_cast<uint8_t>(((patch.lfo_sync & 0x01) << 6) |
+                                 ((patch.fb & 0x07) << 3) |
+                                  (patch.alg & 0x07));
+    v[41] = clamp99((patch.lfo_speed * 99 + 127) / 255);
+    v[42] = clamp99(patch.lfo_delay);
+    v[43] = clamp99(patch.pmd);
+    v[44] = clamp99(patch.amd);
+    v[45] = static_cast<uint8_t>(((patch.pms & 0x07) << 4) |
+                                 ((patch.ams & 0x03) << 2) |
+                                  (patch.lfo_wave & 0x03));
+    {
+        int t = patch.key_offset + 24;
+        if (t < 0) t = 0;
+        if (t > 48) t = 48;
+        v[46] = static_cast<uint8_t>(t);
+    }
+    v[47] = patch.pb_range > 12 ? 12 : patch.pb_range;
+    v[48] = static_cast<uint8_t>(((patch.chorus     & 0x01) << 4) |
+                                 ((patch.mono       & 0x01) << 3) |
+                                 ((patch.sus_fs     & 0x01) << 2) |
+                                 ((patch.porta_fs   & 0x01) << 1) |
+                                  (patch.porta_mode & 0x01));
+    v[49] = clamp99(patch.porta_time);
+    v[50] = clamp99(patch.foot_volume);
+    v[51] = clamp99(patch.mw_pitch);
+    v[52] = clamp99(patch.mw_amp);
+    v[53] = clamp99(patch.bc_pitch);
+    v[54] = clamp99(patch.bc_amp);
+    v[55] = clamp99(patch.bc_pbias);
+    v[56] = clamp99(patch.bc_ebias);
+
+    for (int i = 0; i < 10; ++i) {
+        char c = patch.name[i];
+        if (c == '\0') {
+            for (; i < 10; ++i) v[57 + i] = ' ';
+            break;
+        }
+        v[57 + i] = static_cast<uint8_t>(c) & 0x7F;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        v[67 + i] = clamp99(patch.peg_r[i]);
+        v[70 + i] = dx21_effective_peg_level(&patch, i);
+    }
+    return true;
+}
+
+bool CDX21Memory::vmemToPatch(const uint8_t* v, DX21_Patch& p) const {
+    std::memset(&p, 0, sizeof(p));
+
+    for (int w = 0; w < 4; ++w) {
+        DX21_Operator& o = p.op[kWireOpOrder[w]];
+        const uint8_t* d = v + w * 10;
+        o.ar  = d[0] & 0x1F;
+        o.d1r = d[1] & 0x1F;
+        o.d2r = d[2] & 0x1F;
+        o.rr  = d[3] & 0x0F;
+        o.d1l = d[4] & 0x0F;
+        o.ls  = clamp99(d[5]);
+        o.ame = (d[6] >> 6) & 0x01;
+        o.ebs = (d[6] >> 3) & 0x07;
+        o.kvs = d[6] & 0x07;
+        o.out = clamp99(d[7]);
+        o.crs = d[8] & 0x3F;
+        o.rs  = (d[9] >> 3) & 0x03;
+        o.det = (d[9] & 0x07) > 6 ? 6 : (d[9] & 0x07);
+    }
+
+    p.lfo_sync  = (v[40] >> 6) & 0x01;
+    p.fb        = (v[40] >> 3) & 0x07;
+    p.alg       = v[40] & 0x07;
+    p.lfo_speed = static_cast<uint8_t>((clamp99(v[41]) * 255 + 49) / 99);
+    p.lfo_delay = clamp99(v[42]);
+    p.pmd       = clamp99(v[43]);
+    p.amd       = clamp99(v[44]);
+    p.pms       = (v[45] >> 4) & 0x07;
+    p.ams       = (v[45] >> 2) & 0x03;
+    p.lfo_wave  = v[45] & 0x03;
+    p.key_offset = static_cast<int8_t>((v[46] > 48 ? 48 : v[46]) - 24);
+    p.pb_range   = v[47] > 12 ? 12 : v[47];
+    p.chorus     = (v[48] >> 4) & 0x01;
+    p.mono       = (v[48] >> 3) & 0x01;
+    p.sus_fs     = (v[48] >> 2) & 0x01;
+    p.porta_fs   = (v[48] >> 1) & 0x01;
+    p.porta_mode = v[48] & 0x01;
+    p.porta_time = clamp99(v[49]);
+    p.foot_volume= clamp99(v[50]);
+    p.mw_pitch   = clamp99(v[51]);
+    p.mw_amp     = clamp99(v[52]);
+    p.bc_pitch   = clamp99(v[53]);
+    p.bc_amp     = clamp99(v[54]);
+    p.bc_pbias   = clamp99(v[55]);
+    p.bc_ebias   = clamp99(v[56]);
+
+    int n = 0;
+    for (int i = 0; i < 10; ++i) {
+        char c = static_cast<char>(v[57 + i] & 0x7F);
+        p.name[i] = (c >= 0x20) ? c : ' ';
+        if (p.name[i] != ' ') n = i + 1;
+    }
+    p.name[n] = '\0';
+    if (n == 0) std::snprintf(p.name, sizeof(p.name), "VMEM Import");
+
+    for (int i = 0; i < 3; ++i) {
+        p.peg_r[i] = clamp99(v[67 + i]);
+        p.peg_l[i] = clamp99(v[70 + i]);
+    }
+    p.op_enable = 0x0F;
+    return true;
+}
+
 int CDX21Memory::importSysex(const uint8_t* data, size_t len) {
     if (len < 8) return -1;
 
     // Check Yamaha SysEx header: F0 43
     if (data[0] != 0xF0 || data[1] != 0x43) return -1;
 
-    // Check format: 32-voice VCED bulk dump = byte 3 == 0x09
     uint8_t format = data[3];
-    if (format != 0x09) return -1;
-
-    // Byte count: 2 bytes, MSB first
-    if (len < 8 + 2) return -1;
     uint16_t byteCount = (static_cast<uint16_t>(data[4]) << 7) | data[5];
-    if (byteCount != DX21_SYSEX_BULK_SIZE) return -1;
 
-    // Checksum
-    if (len < static_cast<size_t>(8 + 2 + byteCount + 1 + 1)) return -1;
-    uint8_t checksum = 0;
-    for (uint16_t i = 0; i < byteCount; ++i) {
-        checksum += data[6 + i];
-    }
-    checksum &= 0x7F;
-    if (data[6 + byteCount] != checksum) return -1;
+    // --- Real DX21 32-voice VMEM bulk: format 0x04, 4096 bytes ---
+    if (format == 0x04) {
+        if (byteCount != DX21_VMEM_BULK_SIZE) return -1;
+        if (len < static_cast<size_t>(6 + byteCount + 2)) return -1;
+        // Two's-complement checksum: sum of data + checksum ≡ 0 mod 128
+        if (yamahaChecksum(data + 6, byteCount) != data[6 + byteCount])
+            return -1;
 
-    // FUNCTION #23 (Memory Protect): bulk dump is a write to all 32
-    // RAM voices. Reject when protected.
-    if (m_memoryProt) return -1;
+        // FUNCTION #23 (Memory Protect): bulk dump writes all 32 RAM
+        // voices. Reject when protected.
+        if (m_memoryProt) return -1;
 
-    // Parse voices
-    int imported = 0;
-    for (int v = 0; v < 32; ++v) {
-        const uint8_t* vced = data + 6 + v * 76;
-        if (vcedToPatch(vced, m_ram[v])) {
-            m_ramValid[v] = true;
-            ++imported;
+        int imported = 0;
+        for (int v = 0; v < 32; ++v) {
+            // 73 VMEM bytes per voice, zero-padded to 128.
+            const uint8_t* vmem = data + 6 + v * DX21_VMEM_PADDED;
+            if (vmemToPatch(vmem, m_ram[v])) {
+                m_ramValid[v] = true;
+                ++imported;
+            }
         }
+        return imported;
     }
 
-    return imported;
+    // --- Legacy microDX21 bulk (receive-only): format 0x09, 2432 B ---
+    if (format == 0x09) {
+        if (byteCount != DX21_SYSEX_BULK_SIZE) return -1;
+        if (len < static_cast<size_t>(6 + byteCount + 2)) return -1;
+        uint8_t checksum = 0;
+        for (uint16_t i = 0; i < byteCount; ++i) checksum += data[6 + i];
+        if ((checksum & 0x7F) != data[6 + byteCount]) return -1;
+
+        if (m_memoryProt) return -1;
+
+        int imported = 0;
+        for (int v = 0; v < 32; ++v) {
+            const uint8_t* vced = data + 6 + v * DX21_SYSEX_VCED_SIZE;
+            if (vcedToPatch(vced, m_ram[v])) {
+                m_ramValid[v] = true;
+                ++imported;
+            }
+        }
+        return imported;
+    }
+
+    return -1;
 }
 
 bool CDX21Memory::exportSysex(std::vector<uint8_t>& out) const {
     out.clear();
-    out.reserve(8 + DX21_SYSEX_BULK_SIZE);
+    out.reserve(8 + DX21_VMEM_BULK_SIZE);
 
     out.push_back(0xF0);
     out.push_back(0x43);
     out.push_back(0x00);  // Device number 0
-    out.push_back(0x09);  // 32-voice VCED bulk dump
+    out.push_back(0x04);  // 32-voice VMEM bulk dump (real DX21 format)
 
-    // Byte count: MSB first
-    out.push_back(static_cast<uint8_t>(DX21_SYSEX_BULK_SIZE >> 7));
-    out.push_back(static_cast<uint8_t>(DX21_SYSEX_BULK_SIZE & 0x7F));
+    // Byte count: MSB first, 7-bit split (4096 → 0x20 0x00)
+    out.push_back(static_cast<uint8_t>(DX21_VMEM_BULK_SIZE >> 7));
+    out.push_back(static_cast<uint8_t>(DX21_VMEM_BULK_SIZE & 0x7F));
 
-    // Encode all 32 RAM voices
-    uint8_t vced[76];
+    // Encode all 32 RAM voices: 73 VMEM bytes + 55 zero-pad each.
+    uint8_t vmem[DX21_VMEM_PADDED];
     for (int v = 0; v < 32; ++v) {
+        std::memset(vmem, 0, sizeof(vmem));
         if (m_ramValid[v]) {
-            patchToVced(m_ram[v], vced);
-        } else {
-            std::memset(vced, 0, 76);
+            patchToVmem(m_ram[v], vmem);
         }
-        out.insert(out.end(), vced, vced + 76);
+        out.insert(out.end(), vmem, vmem + DX21_VMEM_PADDED);
     }
 
-    // Checksum
-    uint8_t checksum = 0;
-    for (size_t i = 6; i < out.size(); ++i) {
-        checksum += out[i];
-    }
-    checksum &= 0x7F;
-    out.push_back(checksum);
+    out.push_back(yamahaChecksum(out.data() + 6, DX21_VMEM_BULK_SIZE));
     out.push_back(0xF7);
 
     return true;
@@ -669,30 +1028,25 @@ bool CDX21Memory::exportSysex(std::vector<uint8_t>& out) const {
 bool CDX21Memory::exportVoiceSysex(const DX21_Patch& patch,
                                    std::vector<uint8_t>& out) const {
     out.clear();
-    out.reserve(8 + DX21_SYSEX_VCED_SIZE);
+    out.reserve(8 + DX21_VCED93_SIZE);
 
     out.push_back(0xF0);
     out.push_back(0x43);
     out.push_back(0x00);  // Device number 0
-    out.push_back(0x03);  // 1-voice VCED dump
+    out.push_back(0x03);  // 1-voice VCED dump (real DX21 format)
 
-    // Byte count: MSB first (same 7-bit split as the bulk dump)
-    out.push_back(static_cast<uint8_t>(DX21_SYSEX_VCED_SIZE >> 7));
-    out.push_back(static_cast<uint8_t>(DX21_SYSEX_VCED_SIZE & 0x7F));
+    // Byte count: MSB first (93 → 0x00 0x5D)
+    out.push_back(static_cast<uint8_t>(DX21_VCED93_SIZE >> 7));
+    out.push_back(static_cast<uint8_t>(DX21_VCED93_SIZE & 0x7F));
 
-    uint8_t vced[DX21_SYSEX_VCED_SIZE];
-    if (!patchToVced(patch, vced)) {
+    uint8_t vced[DX21_VCED93_SIZE];
+    if (!patchToVced93(patch, vced)) {
         out.clear();
         return false;
     }
-    out.insert(out.end(), vced, vced + DX21_SYSEX_VCED_SIZE);
+    out.insert(out.end(), vced, vced + DX21_VCED93_SIZE);
 
-    uint8_t checksum = 0;
-    for (size_t i = 6; i < out.size(); ++i) {
-        checksum += out[i];
-    }
-    checksum &= 0x7F;
-    out.push_back(checksum);
+    out.push_back(yamahaChecksum(out.data() + 6, DX21_VCED93_SIZE));
     out.push_back(0xF7);
 
     return true;
@@ -701,27 +1055,41 @@ bool CDX21Memory::exportVoiceSysex(const DX21_Patch& patch,
 bool CDX21Memory::importVoiceSysex(const uint8_t* data, size_t len, int slot) {
     if (!data || slot < 0 || slot >= kNumRamVoices) return false;
 
-    // F0 43 0n 03 cntHi cntLo <76 bytes> cs F7 = 6 + 76 + 2 = 84 bytes
-    if (len < 6 + DX21_SYSEX_VCED_SIZE + 2) return false;
+    if (len < 8) return false;
     if (data[0] != 0xF0 || data[1] != 0x43) return false;
     if (data[3] != 0x03) return false;
 
     uint16_t byteCount = (static_cast<uint16_t>(data[4]) << 7) | data[5];
-    if (byteCount != DX21_SYSEX_VCED_SIZE) return false;
 
-    uint8_t checksum = 0;
-    for (uint16_t i = 0; i < byteCount; ++i) {
-        checksum += data[6 + i];
+    // --- Real DX21 1-voice VCED: 93 bytes ---
+    if (byteCount == DX21_VCED93_SIZE) {
+        if (len < static_cast<size_t>(6 + byteCount + 2)) return false;
+        if (yamahaChecksum(data + 6, byteCount) != data[6 + byteCount])
+            return false;
+
+        // FUNCTION #23 (Memory Protect): a 1-voice dump writes the
+        // edit slot in RAM — same policy as the real-time parameter
+        // change and the bulk dump.
+        if (m_memoryProt) return false;
+
+        if (!vced93ToPatch(data + 6, m_ram[slot])) return false;
+        m_ramValid[slot] = true;
+        return true;
     }
-    checksum &= 0x7F;
-    if (data[6 + byteCount] != checksum) return false;
 
-    // FUNCTION #23 (Memory Protect): a 1-voice dump is a write to the
-    // edit slot in RAM. Reject when protected — same policy as the
-    // real-time parameter change and the bulk dump.
-    if (m_memoryProt) return false;
+    // --- Legacy microDX21 76-byte record (receive-only) ---
+    if (byteCount == DX21_SYSEX_VCED_SIZE) {
+        if (len < static_cast<size_t>(6 + byteCount + 2)) return false;
+        uint8_t checksum = 0;
+        for (uint16_t i = 0; i < byteCount; ++i) checksum += data[6 + i];
+        if ((checksum & 0x7F) != data[6 + byteCount]) return false;
 
-    if (!vcedToPatch(data + 6, m_ram[slot])) return false;
-    m_ramValid[slot] = true;
-    return true;
+        if (m_memoryProt) return false;
+
+        if (!vcedToPatch(data + 6, m_ram[slot])) return false;
+        m_ramValid[slot] = true;
+        return true;
+    }
+
+    return false;
 }
