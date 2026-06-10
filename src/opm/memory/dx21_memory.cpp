@@ -2,6 +2,22 @@
 #include <cstdio>
 #include <cstdlib>
 
+namespace {
+// Return the parent directory portion of a forward-slash-separated path,
+// or an empty string if there is no parent (e.g. "voice.json" or "").
+//
+// Examples:
+//   "MICRODX21/BANK_01/voice_00.json" -> "MICRODX21/BANK_01"
+//   "MICRODX21/performances.json"      -> "MICRODX21"
+//   "voice.json"                       -> ""
+//   ""                                 -> ""
+std::string parentDir(const std::string& path) {
+    auto slash = path.find_last_of('/');
+    if (slash == std::string::npos) return "";
+    return path.substr(0, slash);
+}
+} // namespace
+
 // ===========================================================================
 // DX21_Performance
 // ===========================================================================
@@ -347,12 +363,25 @@ bool CDX21Memory::jsonToPerf(const std::string& json, DX21_Performance& outPerf)
 // ===========================================================================
 bool CDX21Memory::saveRamBank(const std::string& dirPath) {
     if (!m_fs) return false;
+    if (dirPath.empty()) return false;
 
-    // Ensure directory exists (best effort; listDir to probe)
-    std::vector<std::string> dummy;
-    if (!m_fs->listDir(dirPath, dummy)) {
-        // Directory may not exist; std::filesystem will handle it via writeFileFromVector
-        // but FatFS needs explicit mkdir. We skip that for now.
+    // The FatFS-backed implementation needs an explicit mkdir before any
+    // file write into a fresh directory. We call MakeDirectory recursively
+    // (= `mkdir -p`) on the bank directory itself; the FS implementation
+    // is responsible for also creating missing parent directories.
+    //
+    // Defense in depth: the GitHub-Actions release pipeline (and the local
+    // helper script scripts/prepare_sd_skeleton.sh) also pre-creates the
+    // MICRODX21/BANK_01..16/ skeleton on the SD image, so this is normally
+    // a no-op. It is the fallback for users who flashed the kernel image
+    // onto an otherwise empty SD card.
+    if (!m_fs->MakeDirectory(dirPath, /*recursive=*/true)) {
+        // MakeDirectory may legitimately fail on FS implementations that
+        // do not support directory creation (the IFileSystem default
+        // returns false). The caller in opmemuadapter.h propagates this
+        // as MemoryResult::SaveFailed, which the UI surfaces as
+        // "SAVE FAILED" on the OLED status line.
+        return false;
     }
 
     for (int i = 0; i < kNumRamVoices; ++i) {
@@ -401,6 +430,19 @@ bool CDX21Memory::loadRamBank(const std::string& dirPath) {
 // ===========================================================================
 bool CDX21Memory::savePerformanceBank(const std::string& filePath) {
     if (!m_fs) return false;
+    if (filePath.empty()) return false;
+
+    // Make sure the parent directory of the performance file exists.
+    // For the canonical layout (`MICRODX21/performances.json`) this is the
+    // `MICRODX21` directory itself, which the release pipeline and the
+    // MakeDirectory(...) call above in saveRamBank() will have already
+    // created. This call is the runtime fallback for users who didn't
+    // flash the pre-populated SD image.
+    std::string parent = parentDir(filePath);
+    if (!parent.empty() && !m_fs->MakeDirectory(parent, /*recursive=*/true)) {
+        // See note in saveRamBank() above.
+        return false;
+    }
 
     std::string json = "{\n  \"performances\": [\n";
     for (int i = 0; i < kNumPerformances; ++i) {

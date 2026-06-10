@@ -96,6 +96,54 @@ public:
         return true;
     }
 
+    bool MakeDirectory(const std::string& path, bool recursive) override
+    {
+        if (path.empty()) return false;
+        std::string p = buildPath(path);
+
+        if (!recursive) {
+            return f_mkdir(p.c_str()) == FR_OK;
+        }
+
+        // Recursive: walk path components and create each missing one.
+        // FatFS f_mkdir only creates a single level, so we manually
+        // split on '/' and create prefix by prefix.
+        std::string acc;
+        if (!p.empty() && p.front() == '/') acc = "/";
+
+        size_t i = 0;
+        // skip leading slash (already in acc)
+        if (!acc.empty()) i = 1;
+
+        bool ok = true;
+        while (i <= p.size()) {
+            if (i == p.size() || p[i] == '/') {
+                std::string component = p.substr(0, i);
+                if (!component.empty() && component != "." && component != "/") {
+                    // f_stat to probe; FR_OK means it already exists.
+                    FILINFO fi;
+                    FRESULT r = f_stat(component.c_str(), &fi);
+                    if (r == FR_OK) {
+                        if (!(fi.fattrib & AM_DIR)) {
+                            // Path component exists but is a file -> cannot proceed.
+                            ok = false;
+                            break;
+                        }
+                    } else {
+                        // Not present -> create.
+                        FRESULT m = f_mkdir(component.c_str());
+                        if (m != FR_OK && m != FR_EXIST) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            ++i;
+        }
+        return ok;
+    }
+
 private:
     std::string buildPath(const std::string& rel) const
     {

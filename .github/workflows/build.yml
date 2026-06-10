@@ -207,6 +207,19 @@ jobs:
           fi
           echo "Build: ${{ steps.gitinfo.outputs.git_info }}" >> release/version.txt
 
+      - name: Pre-create SD card bank directories
+        run: |
+          set -ex
+          # Create the MICRODX21/BANK_01..16/ skeleton on the released SD image
+          # so that saveRamBank() has somewhere to write. The synth code has a
+          # runtime fallback (IFileSystem::MakeDirectory) for users who flash
+          # the kernel image onto an otherwise empty card, but on the released
+          # image we ship with the directories in place.
+          #
+          # See scripts/prepare_sd_skeleton.sh for the equivalent local flow.
+          chmod +x scripts/prepare_sd_skeleton.sh
+          bash scripts/prepare_sd_skeleton.sh release
+
       - name: Create combined ZIP
         run: |
           cd release

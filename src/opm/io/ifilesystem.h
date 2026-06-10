@@ -29,6 +29,15 @@ struct IFileSystem {
         return false;
     }
 
+    // Optional capability: create a directory.
+    // If `recursive` is true, also create any missing parent directories
+    // (i.e. `mkdir -p`). Implementations that don't support directory
+    // creation should leave the default no-op below.
+    // Returns true if the directory exists (newly created or pre-existing).
+    virtual bool MakeDirectory(const std::string& /*path*/, bool /*recursive*/ = true) {
+        return false;
+    }
+
     // Optional helper: best-effort atomic write via temp+rename.
     // If rename/remove are not supported by the FS implementation, this returns false.
     virtual bool writeFileAtomic(const std::string& path, const std::vector<uint8_t>& data) {
