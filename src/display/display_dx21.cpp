@@ -79,6 +79,16 @@ static const int kEditToAdapter[] = {
 static_assert(sizeof(kEditToAdapter)/sizeof(kEditToAdapter[0]) == EDIT_PARAM_COUNT,
               "kEditToAdapter must match EDIT_PARAM_COUNT");
 
+// EDIT_PARAM_NAMES indices of the EG-Copy utility entries. Both
+// behave identically: rotation picks the source OP, click copies
+// into the currently selected m_EditOp (TriggerEditAction).
+static constexpr int kEditIdxEgCopy     = 32;  // "EG Copy"
+static constexpr int kEditIdxEgCopyFrom = 33;  // "from OP"
+
+static inline bool IsEgCopyEntry(int idx) {
+    return idx == kEditIdxEgCopy || idx == kEditIdxEgCopyFrom;
+}
+
 // The table above maps the per-operator entries to OP1 (kParamOp0*).
 // The DX21ParamIndex enum lays the other operators out at fixed
 // strides behind OP1 — 5 consecutive core params per op
@@ -487,6 +497,7 @@ void CDX21Display::RenderEditMode() {
 
     // Page 1: big 3-digit value (read from adapter, or fallback to m_Value)
     int value = ReadEditValue(m_pAdapter, m_ParamIdx, m_EditOp);
+    if (IsEgCopyEntry(m_ParamIdx)) value = m_EgCopySrc + 1;  // source OP
     if (value < 0) value = m_Value;
     DrawBigNumber(0, 8, value, 3);
 
@@ -501,6 +512,10 @@ void CDX21Display::RenderEditMode() {
         snprintf(line, sizeof(line), "%-16.16s", m_ValueStr);
     } else if (m_Status) {
         snprintf(line, sizeof(line), "%-16.16s", m_Status);
+    } else if (IsEgCopyEntry(m_ParamIdx)) {
+        // EG Copy: show the pending source → destination route.
+        snprintf(line, sizeof(line), "from OP%d to OP%d ",
+                 m_EgCopySrc + 1, m_EditOp + 1);
     } else {
         // Show the adapter-side display string if available.
         if (m_pAdapter) {
@@ -805,6 +820,21 @@ int CDX21Display::AdjustValue(int delta) {
 
         case kModeEdit:
             if (m_ParamIdx < 0 || m_ParamIdx >= EDIT_PARAM_COUNT) return -1;
+            // "EG Copy" / "from OP": rotation selects the SOURCE
+            // operator (1..4). The copy itself fires on click
+            // (TriggerEditAction). No synth write here.
+            if (IsEgCopyEntry(m_ParamIdx)) {
+                int src = (m_EgCopySrc + delta) & 3;
+                m_EgCopySrc = src;
+                char msg[24];
+                snprintf(msg, sizeof(msg), "FROM OP%d>OP%d",
+                         src + 1, m_EditOp + 1);
+                SetStatus(msg);
+                MarkDirty();
+                // -1: the input layer must not overwrite our status
+                // with its generic "VAL=" message.
+                return -1;
+            }
             kp = ResolveEditParam(kEditToAdapter[m_ParamIdx], m_EditOp);
             break;
 
@@ -861,6 +891,28 @@ int CDX21Display::AdjustValue(int delta) {
 // Action index → adapter call. The numeric index is enough; the
 // display uses literal action-name tables inline where the renderer
 // needs them.
+// EDIT-mode action entries. Click on "EG Copy" / "from OP" executes
+// the EG copy from the rotation-selected source operator into the
+// triple-click-selected destination (m_EditOp). Memory Protect and
+// src == dst are rejected by the engine.
+bool CDX21Display::TriggerEditAction() {
+    if (!m_pAdapter || m_Mode != DX21UI::kModeEdit) return false;
+    if (!IsEgCopyEntry(m_ParamIdx)) return false;
+
+    char msg[24];
+    if (m_pAdapter->TriggerEgCopy(m_EgCopySrc, m_EditOp)) {
+        snprintf(msg, sizeof(msg), "EG OP%d>OP%d OK",
+                 m_EgCopySrc + 1, m_EditOp + 1);
+    } else if (m_EgCopySrc == m_EditOp) {
+        snprintf(msg, sizeof(msg), "SRC=DST OP%d", m_EditOp + 1);
+    } else {
+        snprintf(msg, sizeof(msg), "EG COPY FAILED");
+    }
+    SetStatus(msg);
+    MarkDirty();
+    return true;  // click consumed — don't cycle the mode
+}
+
 bool CDX21Display::TriggerFunctionAction() {
     if (!m_pAdapter || m_Mode != DX21UI::kModeFunction) return false;
     int idx = m_ParamIdx;

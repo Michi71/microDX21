@@ -9,6 +9,53 @@ All notable changes to microDX21, in reverse chronological order.
 > Synth engine, Memory Protect, Build, Fixed, and Test coverage
 > sub-sections further down describe the **post-0.1.0** work.
 
+### Added (post-0.1.0, manual-comparison pass III — final nits)
+- **SPLIT MONO+POLY mixing ("7+1")**: poly/mono is a per-voice
+  (VCED 63) flag, so in SPLIT mode each side now follows its own
+  patch instead of the global mono switch. A MONO side gets 1 chip
+  channel, the POLY partner the remaining 7; both POLY → classic
+  4+4, both MONO → 1+1. The side-B start is dynamic
+  (`voiceStart(SideB) == voiceCount(SideA)`), balance/TL re-apply
+  and the edit-channel ranges follow it via `sideOfVoice()`. Patch
+  selects and poly/mono edits that move the boundary rebuild the
+  layout (`refreshVoiceLayout()`) so no stale voices keep ringing
+  outside the new ranges.
+- **EG COPY** (EDIT entries 33/34 "EG Copy"/"from OP", the panel
+  utility): rotation picks the source operator, the encoder click
+  copies AR/D1R/D1L/D2R/RR into the triple-click-selected
+  destination OP. Goes through `writeVcedOperator()`, so sounding
+  voices update live, COMPARE snapshots the pre-edit state, Memory
+  Protect gates the write and the changes transmit when "Midi Sy
+  Info" is ON. The display shows "from OPn to OPm".
+- **Active-Sensing timeout** (manual, reception data 4-1-3): after
+  the first 0xFE the engine expects MIDI data (or further 0xFE
+  keep-alives) at least every 300 ms. On timeout it performs the
+  same processing as All Notes Off (CC#123) and disarms until the
+  next 0xFE; without any 0xFE the watchdog never fires. Producer
+  side sets two lock-free atomics in `processMidi()`; state and
+  timeout live on the audio thread (`updateActiveSensing()`, no
+  heap, realtime-safe).
+- **VMEM byte-exactness vs. real hardware**: `exportSysex()` now
+  writes the constant `0x01` at padding offset 91 of every voice
+  record that real DX21 dumps carry (verified against all 128
+  voices of the four factory banks in `doc/SYX`, undocumented in
+  the manual). Exports are now byte-identical to hardware dumps.
+
+### Test coverage (pass III)
+- `test_vmem_roundtrip` verifies the VMEM bit packing against the
+  four REAL DX21 factory banks in `doc/SYX`: framing + two's-
+  complement checksum, 32-voice import, printable factory voice
+  names, byte-exact re-export (0 diffs incl. padding) and
+  import→export idempotence. This closes the "VMEM packing needs a
+  real-hardware verify" item — the banks ARE hardware dumps.
+- `test_split_egcopy` covers the SPLIT layouts 4+4 / 7+1 / 1+7 /
+  1+1, mono retrigger and last-note priority per side, the layout
+  rebuild on a boundary-moving patch change, and EG COPY semantics
+  (exact 5-param copy, src/dst validation, Memory Protect).
+- `test_active_sensing` covers: no 0xFE → no timeout, 0xFE +
+  300 ms idle → all notes off + disarm, periodic keep-alives, and
+  timer reset by any (non-0xFE) MIDI data.
+
 ### Added (post-0.1.0, manual-comparison pass II — UI workflows)
 - **Audible COMPARE** (double-click in PLAY/EDIT/PERFORMANCE): the
   first edit after a program change snapshots the pre-edit voice;

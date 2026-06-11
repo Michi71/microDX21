@@ -190,6 +190,13 @@ public:
     // status message), false otherwise.
     bool TriggerFunctionAction();
 
+    // EDIT-mode action entries (currently only "EG Copy"). Called
+    // by the input layer on a click in EDIT mode BEFORE mode
+    // cycling. On the "EG Copy" / "from OP" entries it executes
+    // the copy from the rotation-selected source operator into the
+    // current m_EditOp. Returns true when the click was consumed.
+    bool TriggerEditAction();
+
     void SetValue(int v)                    { m_Value = v; MarkDirty(); }
     int  GetValue() const                   { return m_Value; }
 
@@ -378,6 +385,11 @@ private:
 
     // EDIT-mode operator select: 0..3 → OP1..OP4. See GetEditOp().
     int          m_EditOp = 0;
+
+    // EG-Copy source operator (0..3 → OP1..OP4). Selected by
+    // rotating on the EDIT "EG Copy" / "from OP" entries; the
+    // copy itself fires via TriggerEditAction() (encoder click).
+    int          m_EgCopySrc = 0;
 
     // Backing store for SetStatus() — m_Status points here (or is
     // nullptr). 16 visible chars + NUL fits the status line.

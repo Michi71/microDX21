@@ -493,8 +493,10 @@ int COPMEmu::allocVoice(Side side, int note)
     int count = voiceCount(side);
     if (count == 0) return -1;
 
-    // MONO mode: free the single voice slot before allocation
-    if (m_mono && count == 1) {
+    // MONO side: free the single voice slot before allocation.
+    // count == 1 only occurs for monophonic sides (Single+MONO, or
+    // a MONO patch on a SPLIT side — the 7+1 / 1+1 layouts).
+    if (count == 1) {
         for (int i = start; i < start + count; ++i) {
             if (m_voices[i].active) {
                 freeVoice(i);
@@ -652,6 +654,12 @@ void COPMEmu::noteOff(int note)
 // ===========================================================================
 void COPMEmu::processMidi(uint8_t* data, int size)
 {
+    // Active-Sensing watchdog: ANY incoming MIDI data counts as
+    // activity and resets the 300 ms timeout on the audio thread.
+    if (size > 0) {
+        m_midiActivity.store(true, std::memory_order_release);
+    }
+
     int i = 0;
     while (i < size) {
         uint8_t status = data[i];
@@ -664,7 +672,11 @@ void COPMEmu::processMidi(uint8_t* data, int size)
             msgLen = 2;  // Program Change / Channel Pressure
         }
         else if (status == 0xF8 || status == 0xFE || status == 0xFC) {
-            msgLen = 1;  // Realtime: skip
+            msgLen = 1;  // Realtime
+            if (status == 0xFE) {
+                // Active Sensing: arm the audio-thread watchdog.
+                m_activeSenseSeen.store(true, std::memory_order_release);
+            }
         }
         else if (status == 0xF0) {
             // SysEx: find length by scanning for 0xF7
@@ -701,6 +713,47 @@ void COPMEmu::processMidi(uint8_t* data, int size)
 
         i += msgLen;
     }
+}
+
+// ===========================================================================
+// updateActiveSensing — MIDI Active-Sensing (0xFE) watchdog.
+// Called from processBlock (audio thread). After the first 0xFE the
+// original DX21 expects MIDI data at least every ~300 ms; on timeout
+// it performs the same processing as All Notes Off (CC#123) and
+// disarms until the next 0xFE. No heap, two lock-free atomics —
+// safe for the realtime path.
+// ===========================================================================
+void COPMEmu::updateActiveSensing(int numSamples)
+{
+    if (m_activeSenseSeen.exchange(false, std::memory_order_acq_rel)) {
+        m_asArmed = true;
+    }
+    const bool activity =
+        m_midiActivity.exchange(false, std::memory_order_acq_rel);
+
+    if (!m_asArmed) return;
+
+    if (activity) {
+        m_asIdleSamples = 0;
+        return;
+    }
+
+    m_asIdleSamples += static_cast<uint32_t>(numSamples);
+    if (m_asIdleSamples < kActiveSenseTimeout) return;
+
+    // Timeout: mirror the CC#123 All-Notes-Off handling, then disarm
+    // until the next 0xFE (like the original firmware).
+    for (int v = 0; v < kNumVoices; ++v) {
+        if (m_voices[v].active) {
+            writeReg(0x08, static_cast<uint8_t>(v));
+            m_voices[v].active = false;
+            m_voices[v].sustained = false;
+            m_voices[v].keyOnDelay = 0;
+            if (m_voices[v].pegStage < 2) m_voices[v].pegStage = 2;
+        }
+    }
+    m_asArmed = false;
+    m_asIdleSamples = 0;
 }
 
 // ===========================================================================
@@ -880,6 +933,7 @@ void COPMEmu::processBlock(float* outputL, float* outputR, int numSamples)
     // DAC-Samples an den bestehenden Pending-Puffer an. Getragene Daten
     // aus dem vorherigen processBlock-Aufruf werden zuerst konsumiert.
     processMidiBuffer();
+    updateActiveSensing(numSamples);
     updatePortamento(numSamples);
     updatePitchEG(numSamples);
 
@@ -1093,6 +1147,7 @@ void COPMEmu::setCurrentProgram(int index)
 // ===========================================================================
 void COPMEmu::applyProgramChange(int index)
 {
+    const int oldStartB = voiceStart(SideB);
     m_currentPatch = index;
     m_patchA = index;
 
@@ -1107,6 +1162,13 @@ void COPMEmu::applyProgramChange(int index)
     // the edit buffer — EDIT RECALL is the safety net).
     m_bCompare = false;
     m_bEditDirty = false;
+
+    // SPLIT: the new side-A patch can move the poly/mono boundary —
+    // rebuild the layout (frees voices) instead of in-place re-apply.
+    if (m_playMode == Split && voiceStart(SideB) != oldStartB) {
+        refreshVoiceLayout();
+        return;
+    }
 
     applyPatchToSide(SideA, index);
     // In Single mode side B has no voices; applyPatchToSide handles count==0.
@@ -1207,7 +1269,7 @@ void COPMEmu::completeKeyOn(int voice)
     if (!m_voices[voice].active) return;
 
     const DX21_Patch* patch = nullptr;
-    Side side = (voice < 4) ? SideA : SideB;
+    Side side = sideOfVoice(voice);
     if (m_playMode == Single) {
         patch = getPatch(m_patchA);
     } else {
@@ -1279,25 +1341,58 @@ COPMEmu::Side COPMEmu::routeNoteToSide(int note) const
 int COPMEmu::voiceStart(Side side) const
 {
     if (side == SideA) return 0;
-    return 4;  // Side B always starts at voice 4
+    // SPLIT: side B starts right after side A's (dynamic) range so
+    // the 7+1 / 1+7 / 1+1 layouts pack the 8 chip channels densely.
+    if (m_playMode == Split) return voiceCount(SideA);
+    return 4;  // DUAL: side B always starts at voice 4
 }
 
 int COPMEmu::voiceCount(Side side) const
 {
-    // In MONO mode, the synth plays at most one note at a time.
-    // We reflect this in voiceCount so that allocVoice's free-the-
-    // single-slot path triggers correctly (it requires count == 1).
-    if (m_mono && m_playMode == Single && side == SideA) {
-        return 1;
-    }
     switch (m_playMode) {
     case Single:
-        return (side == SideA) ? 8 : 0;
+        // In MONO mode, the synth plays at most one note at a time.
+        // We reflect this in voiceCount so that allocVoice's free-
+        // the-single-slot path triggers correctly (count == 1).
+        if (side != SideA) return 0;
+        return m_mono ? 1 : 8;
     case Dual:
-    case Split:
+        return 4;
+    case Split: {
+        // DX21 MONO+POLY mix: poly/mono is a voice (VCED 63) flag,
+        // so each split side follows its own patch. A MONO side
+        // gets 1 note, the POLY partner the remaining 7 ("7+1").
+        // Both MONO → 1+1; both POLY → classic 4+4.
+        const bool aMono = sideIsMono(SideA);
+        const bool bMono = sideIsMono(SideB);
+        if (aMono && bMono) return 1;
+        if (aMono) return (side == SideA) ? 1 : 7;
+        if (bMono) return (side == SideA) ? 7 : 1;
         return 4;
     }
+    }
     return 0;
+}
+
+bool COPMEmu::sideIsMono(Side side) const
+{
+    const DX21_Patch* p = getPatch(side == SideA ? m_patchA : m_patchB);
+    return p && (p->mono & 0x01);
+}
+
+// ===========================================================================
+// refreshVoiceLayout — free all voices and re-apply both side patches.
+// Called whenever the SPLIT voice layout may have changed (patch select
+// or a poly/mono edit): active voices could otherwise sit outside the
+// new side ranges and keep ringing with stale patch data.
+// ===========================================================================
+void COPMEmu::refreshVoiceLayout()
+{
+    for (int i = 0; i < kNumVoices; ++i) {
+        if (m_voices[i].active) freeVoice(i);
+    }
+    applyPatchToSide(SideA, m_patchA);
+    if (m_playMode != Single) applyPatchToSide(SideB, m_patchB);
 }
 
 // ===========================================================================
@@ -1337,7 +1432,7 @@ void COPMEmu::setBalance(int balance)
     for (int v = 0; v < kNumVoices; ++v) {
         if (!m_voices[v].active) continue;
 
-        Side side = (v < 4) ? SideA : SideB;
+        Side side = sideOfVoice(v);
         int tlOffset = 0;
         if (m_balance < 50 && side == SideA) {
             tlOffset = ((50 - m_balance) * 127) / 50;
@@ -1371,9 +1466,16 @@ void COPMEmu::setMono(bool mono)
 void COPMEmu::setPatchA(int index)
 {
     if (index < 0 || index >= TOTAL_OPM_PATCHES) return;
+    const int oldStartB = voiceStart(SideB);
     m_patchA = index;
     if (m_playMode == Single) {
         m_currentPatch = index;  // backward compat
+    }
+    // SPLIT: a new patch can flip the side's poly/mono flag and move
+    // the 7+1 boundary — rebuild the whole layout in that case.
+    if (m_playMode == Split && voiceStart(SideB) != oldStartB) {
+        refreshVoiceLayout();
+        return;
     }
     applyPatchToSide(SideA, index);
 }
@@ -1381,7 +1483,12 @@ void COPMEmu::setPatchA(int index)
 void COPMEmu::setPatchB(int index)
 {
     if (index < 0 || index >= TOTAL_OPM_PATCHES) return;
+    const int oldStartB = voiceStart(SideB);
     m_patchB = index;
+    if (m_playMode == Split && voiceStart(SideB) != oldStartB) {
+        refreshVoiceLayout();
+        return;
+    }
     applyPatchToSide(SideB, index);
 }
 
@@ -1632,6 +1739,38 @@ void COPMEmu::initVoice() {
     // voice currently sounding it (slot index ≠ chip channel).
     *ram = *GetInitVoicePatch();
     reapplyEditPatch(voice);
+}
+
+// ===========================================================================
+// egCopy — EDIT-mode "EG Copy from OP" utility (original panel feature).
+// Copies the five EG parameters from srcOp to dstOp via
+// writeVcedOperator(), which handles RAM update, OPM register writes
+// for all sounding channels, COMPARE dirty-marking, Memory Protect
+// and the real-time parameter-change transmit.
+// ===========================================================================
+bool COPMEmu::egCopy(int srcOp, int dstOp) {
+    if (srcOp < 0 || srcOp > 3 || dstOp < 0 || dstOp > 3) return false;
+    if (srcOp == dstOp) return false;
+
+    int voice = m_sysexEditVoice;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return false;
+    if (m_memoryProt) return false;  // FUNCTION #23: EG copy is a write
+
+    const DX21_Patch* ram = m_memory.getRamVoice(voice);
+    if (!ram) return false;
+
+    // Copy the source EG by value first — writeVcedOperator mutates
+    // the same patch, and src must stay untouched.
+    const DX21_Operator src = ram->op[srcOp];
+
+    // writeVcedOperator internal param ids: 0=AR, 2=D1R, 8=D1L,
+    // 1=D2R, 3=RR (see the switch in writeVcedOperator).
+    writeVcedOperator(dstOp, 0, src.ar);
+    writeVcedOperator(dstOp, 2, src.d1r);
+    writeVcedOperator(dstOp, 8, src.d1l);
+    writeVcedOperator(dstOp, 1, src.d2r);
+    writeVcedOperator(dstOp, 3, src.rr);
+    return true;
 }
 
 // ===========================================================================
@@ -2179,7 +2318,16 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
         // Per-voice function data (also mirrored into the live engine
         // state so the change is audible immediately, like on the
         // original hardware).
-        case 63: ramPatch->mono = value & 1; setMono(value & 1); break;
+        case 63:
+            ramPatch->mono = value & 1;
+            if (m_playMode == Split) {
+                // SPLIT: poly/mono is per-side (patch flag). Editing
+                // it can move the 7+1 boundary — rebuild the layout.
+                refreshVoiceLayout();
+            } else {
+                setMono(value & 1);
+            }
+            break;
         case 64:
             ramPatch->pb_range = value > 12 ? 12 : value;
             setPitchBendRange(ramPatch->pb_range);

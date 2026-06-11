@@ -68,3 +68,20 @@ target_link_libraries(test_voice_workflow opmemu)
 add_test(NAME voice_workflow COMMAND test_voice_workflow)
 
 add_test(NAME voice_stealing COMMAND test_voice_stealing)
+
+add_executable(test_split_egcopy tests/test_split_egcopy.cpp)
+target_include_directories(test_split_egcopy PRIVATE src)
+target_link_libraries(test_split_egcopy opmemu)
+add_test(NAME split_egcopy COMMAND test_split_egcopy)
+
+add_executable(test_active_sensing tests/test_active_sensing.cpp)
+target_include_directories(test_active_sensing PRIVATE src)
+target_link_libraries(test_active_sensing opmemu)
+add_test(NAME active_sensing COMMAND test_active_sensing)
+
+# VMEM roundtrip against the real DX21 banks in doc/SYX.
+add_executable(test_vmem_roundtrip tests/test_vmem_roundtrip.cpp)
+target_include_directories(test_vmem_roundtrip PRIVATE src)
+target_link_libraries(test_vmem_roundtrip opmemu)
+add_test(NAME vmem_roundtrip
+         COMMAND test_vmem_roundtrip ${CMAKE_SOURCE_DIR}/doc/SYX)

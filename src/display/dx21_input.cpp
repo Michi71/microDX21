@@ -197,6 +197,13 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
                     break;
                 }
             }
+            // In EDIT mode, the click executes utility entries
+            // (EG Copy) instead of cycling the mode.
+            if (m_pDisplay->GetMode() == DX21UI::kModeEdit) {
+                if (m_pDisplay->TriggerEditAction()) {
+                    break;
+                }
+            }
             // Short click: cycle to next mode. The original DX21's
             // PLAY/EDIT/FUNCTION/COMPARE buttons are mapped to a single
             // "mode" encoder in microDX21 (we have one encoder, not 5

@@ -93,3 +93,7 @@ src/opm/firmware/DX21romv15.BIN
 doc/Yamaha-TX81Z-Manual.pdf
 doc/refcard.gif
 doc/tx81z-algorithms.jpg
+
+# Yamaha factory voice banks (local-only, like the firmware ROM).
+# test_vmem_roundtrip skips cleanly when these are absent.
+doc/SYX/

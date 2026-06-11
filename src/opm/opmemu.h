@@ -143,6 +143,11 @@ public:
         if (!m_voices[voice].active) return 0.0f;
         return m_voices[voice].currentPitch;
     }
+    // True while the Active-Sensing watchdog is armed (a 0xFE has
+    // been received and the 300 ms timeout has not yet fired).
+    // Read-only; used by the unit tests.
+    bool isActiveSensingArmed() const { return m_asArmed; }
+
     // True if voice i is currently gliding (isPorting state)
     bool isVoicePorting(int voice) const {
         if (voice < 0 || voice >= kNumVoices) return false;
@@ -221,6 +226,20 @@ public:
     // m_editRecall on load. The OPM is re-applied on load.
     void saveEditRecall();
     void loadEditRecall();
+
+    // ───────────────────────────────────────────────
+    // EG COPY (EDIT-mode utility, like the original panel)
+    // ───────────────────────────────────────────────
+    //
+    // Copy the five EG parameters (AR, D1R, D1L, D2R, RR) from
+    // operator srcOp to operator dstOp (internal indices 0..3 =
+    // panel OP1..OP4) of the current edit voice. Each write goes
+    // through writeVcedOperator(), so the OPM registers of all
+    // sounding channels are updated, COMPARE snapshots the pre-edit
+    // state, and the parameter changes are transmitted when "Midi
+    // Sy Info" is ON. Honours Memory Protect. Returns false when
+    // rejected (protect, no edit voice, src == dst, out of range).
+    bool egCopy(int srcOp, int dstOp);
 
     // ───────────────────────────────────────────────
     // COMPARE (EDIT/COMPARE switch on the original panel)
@@ -533,6 +552,21 @@ private:
     std::atomic<int> m_midiWritePos{0};  // producer increments after write
     std::atomic<int> m_midiReadPos{0};   // consumer increments after read
 
+    // --- MIDI Active Sensing (0xFE) watchdog ---
+    // The original DX21 (manual, reception data 4-1-3): once the
+    // first 0xFE arrives, the synth expects MIDI data (or further
+    // 0xFE keep-alives) at least every ~300 ms. On timeout it
+    // performs the same processing as All Notes Off and disarms
+    // until the next 0xFE. The atomics are set by processMidi()
+    // (MIDI/main thread); state and timeout live on the audio
+    // thread (updateActiveSensing, called from processBlock).
+    static const uint32_t kActiveSenseTimeout = (kSampleRate * 3) / 10; // 300 ms
+    std::atomic<bool> m_midiActivity{false};     // any incoming MIDI data
+    std::atomic<bool> m_activeSenseSeen{false};  // 0xFE received
+    bool      m_asArmed = false;       // audio thread: watchdog running
+    uint32_t  m_asIdleSamples = 0;     // audio thread: idle sample count
+    void updateActiveSensing(int numSamples);
+
     // --- SysEx Real-Time Parameter Change ---
     // Real DX21 numbering: VCED voice params 0-92 (manual table 5-2)
     // plus function param 93 (operator enable, table 5-3). The other
@@ -622,6 +656,17 @@ private:
     Side routeNoteToSide(int note) const;
     int  voiceStart(Side side) const;
     int  voiceCount(Side side) const;
+    // True when the given side plays monophonic in SPLIT mode
+    // (per-voice VCED 63 flag of the patch on that side).
+    bool sideIsMono(Side side) const;
+    // Chip channel → side, honouring the dynamic SPLIT boundary.
+    Side sideOfVoice(int voice) const {
+        return (voice < voiceStart(SideB) || m_playMode == Single)
+            ? SideA : SideB;
+    }
+    // Free all voices and re-apply both side patches. Needed when
+    // the SPLIT voice layout (7+1 / 4+4 / 1+7 / 1+1) changes.
+    void refreshVoiceLayout();
     void applyPatchToSide(Side side, int patchIndex);
     const DX21_Patch* getPatch(int index) const;  // RAM priority, ROM fallback
     void setupVoice(int voice, int note, int velocity, const DX21_Patch& patch);

@@ -1015,6 +1015,12 @@ bool CDX21Memory::exportSysex(std::vector<uint8_t>& out) const {
         std::memset(vmem, 0, sizeof(vmem));
         if (m_ramValid[v]) {
             patchToVmem(m_ram[v], vmem);
+            // Real DX21 hardware dumps carry a constant 0x01 at
+            // padding offset 91 of every voice record (verified
+            // against the four factory banks in doc/SYX — all 128
+            // voices). Undocumented in the manual; mirrored here so
+            // our exports are byte-identical to hardware dumps.
+            vmem[91] = 0x01;
         }
         out.insert(out.end(), vmem, vmem + DX21_VMEM_PADDED);
     }

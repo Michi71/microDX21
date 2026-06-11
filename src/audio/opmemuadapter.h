@@ -945,6 +945,13 @@ public:
     void TriggerSaveEditRecall() { if (m_synth) m_synth->saveEditRecall(); }
     void TriggerLoadEditRecall() { if (m_synth) m_synth->loadEditRecall(); }
 
+    // EDIT-mode "EG Copy from OP": copy AR/D1R/D1L/D2R/RR from
+    // srcOp to dstOp (0..3) of the current edit voice. Returns
+    // false when the engine rejects (protect, src == dst, ...).
+    bool TriggerEgCopy(int srcOp, int dstOp) {
+        return m_synth ? m_synth->egCopy(srcOp, dstOp) : false;
+    }
+
     // Trigger a 32-voice VCED bulk dump over the current SysEx
     // out path (m_sysexOutFn). Used by FUNCTION A8 "MIDI Transmit?".
     // Returns true on success.
