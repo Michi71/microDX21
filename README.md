@@ -105,7 +105,7 @@ A minimal 128×32 SSD1305/SH1106 OLED + a single KY-040 rotary encoder. The disp
 
 ### User manual
 
-The encoder/display workflow (gestures, Browse vs. Edit, the 5 mode screens, COMPARE, MEMORY PROTECT, the SD-card action set, MIDI data format, factory defaults and the BoM) is documented in [`doc/microd21-manual.pdf`](doc/microd21-manual.pdf) (17 pages, A4). It mirrors the chapter structure of the original Yamaha DX21 Owner's Manual (`doc/dx21-man.pdf`) and maps every front-panel button onto a single KY-040 gesture. Regenerate with `python3 scripts/build_manual.py` (output path is set at the top of the script).
+The encoder/display workflow (gestures, Browse vs. Edit, the 5 mode screens, COMPARE, MEMORY PROTECT, the SD-card action set, MIDI data format, factory defaults and the BoM) is documented in [`doc/microdx21-manual.pdf`](doc/microdx21-manual.pdf) (17 pages, A4). It mirrors the chapter structure of the original Yamaha DX21 Owner's Manual (`doc/dx21-man.pdf`) and maps every front-panel button onto a single KY-040 gesture. Regenerate with `python3 scripts/build_manual.py` (output path is set at the top of the script).
 
 ---
 
