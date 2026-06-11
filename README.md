@@ -103,6 +103,10 @@ A minimal 128×32 SSD1305/SH1106 OLED + a single KY-040 rotary encoder. The disp
 - **Strings** are extracted from the original ROM V1.5 firmware (`src/opm/firmware/dx21_rom_v1_5.asm`): 36 EDIT-mode parameter labels, 46 FUNCTION-mode menu items, 6 PLAY labels, ON/OFF, note names, tape-dialog labels, MIDI status. All in `src/opm/dx21_ui_strings.h`.
 - **7-segment font** (8×16, hand-coded segment-mask composition) in `src/opm/dx21_ui_7seg.h` evokes the original DX21's 7-segment LED look.
 
+### User manual
+
+The encoder/display workflow (gestures, Browse vs. Edit, the 5 mode screens, COMPARE, MEMORY PROTECT, the SD-card action set, MIDI data format, factory defaults and the BoM) is documented in [`doc/microd21-manual.pdf`](doc/microd21-manual.pdf) (17 pages, A4). It mirrors the chapter structure of the original Yamaha DX21 Owner's Manual (`doc/dx21-man.pdf`) and maps every front-panel button onto a single KY-040 gesture. Regenerate with `python3 scripts/build_manual.py` (output path is set at the top of the script).
+
 ---
 
 ## Build
