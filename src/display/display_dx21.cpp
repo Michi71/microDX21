@@ -515,7 +515,7 @@ void CDX21Display::RenderEditMode() {
     } else if (IsEgCopyEntry(m_ParamIdx)) {
         // EG Copy: show the pending source → destination route.
         snprintf(line, sizeof(line), "from OP%d to OP%d ",
-                 m_EgCopySrc + 1, m_EditOp + 1);
+                 (m_EgCopySrc & 3) + 1, (m_EditOp & 3) + 1);
     } else {
         // Show the adapter-side display string if available.
         if (m_pAdapter) {
@@ -827,8 +827,10 @@ int CDX21Display::AdjustValue(int delta) {
                 int src = (m_EgCopySrc + delta) & 3;
                 m_EgCopySrc = src;
                 char msg[24];
+                // (& 3) keeps the value range provably 1..4 for
+                // -Wformat-truncation.
                 snprintf(msg, sizeof(msg), "FROM OP%d>OP%d",
-                         src + 1, m_EditOp + 1);
+                         (src & 3) + 1, (m_EditOp & 3) + 1);
                 SetStatus(msg);
                 MarkDirty();
                 // -1: the input layer must not overwrite our status
@@ -900,11 +902,12 @@ bool CDX21Display::TriggerEditAction() {
     if (!IsEgCopyEntry(m_ParamIdx)) return false;
 
     char msg[24];
+    // (& 3) keeps the value range provably 1..4 for -Wformat-truncation.
     if (m_pAdapter->TriggerEgCopy(m_EgCopySrc, m_EditOp)) {
         snprintf(msg, sizeof(msg), "EG OP%d>OP%d OK",
-                 m_EgCopySrc + 1, m_EditOp + 1);
+                 (m_EgCopySrc & 3) + 1, (m_EditOp & 3) + 1);
     } else if (m_EgCopySrc == m_EditOp) {
-        snprintf(msg, sizeof(msg), "SRC=DST OP%d", m_EditOp + 1);
+        snprintf(msg, sizeof(msg), "SRC=DST OP%d", (m_EditOp & 3) + 1);
     } else {
         snprintf(msg, sizeof(msg), "EG COPY FAILED");
     }
