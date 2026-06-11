@@ -1096,6 +1096,18 @@ void COPMEmu::applyProgramChange(int index)
     m_currentPatch = index;
     m_patchA = index;
 
+    // The SysEx/panel edit target follows the current program when it
+    // is a RAM voice (0..31). ROM programs (32..127) are read-only:
+    // -1 makes the writeVced*/applySysexParam guards reject edits
+    // until the user loads the voice into RAM (A11/A12).
+    m_sysexEditVoice = (index < CDX21Memory::kNumRamVoices) ? index : -1;
+
+    // Selecting a voice discards the edit/compare context (the manual
+    // is explicit: leaving EDIT and pressing a voice selector erases
+    // the edit buffer — EDIT RECALL is the safety net).
+    m_bCompare = false;
+    m_bEditDirty = false;
+
     applyPatchToSide(SideA, index);
     // In Single mode side B has no voices; applyPatchToSide handles count==0.
     if (m_playMode != Single) {
@@ -1607,16 +1619,19 @@ const DX21_Patch* COPMEmu::GetInitVoicePatch() {
 
 void COPMEmu::initVoice() {
     int voice = m_sysexEditVoice;
-    if (voice < 0 || voice >= kNumVoices) return;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return;
 
     if (m_memoryProt) return;  // FUNCTION #23: init-voice is a write
 
     DX21_Patch* ram = m_memory.getRamVoice(voice);
     if (!ram) return;
 
-    // Copy the static init patch into RAM and re-apply.
+    markEditDirty(ram);
+
+    // Copy the static init patch into RAM and re-apply to every chip
+    // voice currently sounding it (slot index ≠ chip channel).
     *ram = *GetInitVoicePatch();
-    applyPatchToVoice(voice, *ram);
+    reapplyEditPatch(voice);
 }
 
 // ===========================================================================
@@ -1628,7 +1643,7 @@ void COPMEmu::initVoice() {
 // ===========================================================================
 void COPMEmu::saveEditRecall() {
     int voice = m_sysexEditVoice;
-    if (voice < 0 || voice >= kNumVoices) return;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return;
     if (m_memoryProt) return;  // FUNCTION #23: snapshot is a write
     DX21_Patch* ram = m_memory.getRamVoice(voice);
     if (!ram) return;
@@ -1644,11 +1659,14 @@ void COPMEmu::loadEditRecall() {
     if (!m_bEditRecallValid) return;
     if (m_memoryProt) return;  // FUNCTION #23: recall overwrites the voice
     int voice = m_sysexEditVoice;
-    if (voice < 0 || voice >= kNumVoices) return;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return;
     DX21_Patch* ram = m_memory.getRamVoice(voice);
     if (!ram) return;
+    markEditDirty(ram);
     *ram = m_editRecall;
-    applyPatchToVoice(voice, *ram);
+    // The edit slot is a RAM index, not a chip channel — re-apply to
+    // every chip voice currently sounding the patch.
+    reapplyEditPatch(voice);
 }
 
 void COPMEmu::resetEngine()
@@ -1920,6 +1938,7 @@ void COPMEmu::applyPerformance(int perfSlot)
     m_portaRate = perf->portaRate;
     m_portaDecayFactor = computePortaDecayFactor(m_portaRate);
     m_masterTune = perf->transpose;  // Using transpose as master tune for now
+    m_ensembleOn = (perf->chorus != 0);
     // breath params
     m_breathPitchBias = perf->breathPitch;
     m_breathAmplitude = perf->breathAmp;
@@ -1936,6 +1955,12 @@ void COPMEmu::applyPerformance(int perfSlot)
 const DX21_Patch* COPMEmu::getPatch(int index) const
 {
     if (index < 0 || index >= 128) return nullptr;
+
+    // COMPARE: while active, the current program resolves to the
+    // pre-edit snapshot so held/new notes sound the original voice.
+    if (m_bCompare && index == m_currentPatch) {
+        return &m_compareBuffer;
+    }
 
     // Try RAM first (slots 0-31)
     if (index < CDX21Memory::kNumRamVoices) {
@@ -2095,12 +2120,14 @@ void COPMEmu::applySysexChanges()
 void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
 {
     int voice = m_sysexEditVoice;
-    if (voice < 0 || voice >= kNumVoices) return;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return;
 
     if (m_memoryProt) return;  // FUNCTION #23: real-time param is a write
 
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
     if (!ramPatch) return;
+
+    markEditDirty(ramPatch);   // COMPARE: snapshot the pre-edit state
 
     // ── Real DX21 VCED parameter numbering (manual table 5-2) ──────
     //
@@ -2125,28 +2152,29 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
         int block = paramIndex / 13;
         int sub   = paramIndex % 13;
         if (sub == 12 && value > 6) value = 6;  // DET wire range is 0-7
-        writeVcedOperator(kWireToInternalOp[block], kVcedOpParam[sub], value);
+        // transmit=false: incoming MIDI edits must not echo back out.
+        writeVcedOperator(kWireToInternalOp[block], kVcedOpParam[sub], value, false);
         return;
     }
 
     switch (paramIndex) {
-        case 52: writeVcedGlobal(0, value); break;              // ALGORITHM
-        case 53: writeVcedGlobal(1, value); break;              // FEEDBACK
+        case 52: writeVcedGlobal(0, value, false); break;       // ALGORITHM
+        case 53: writeVcedGlobal(1, value, false); break;       // FEEDBACK
         case 54: // LFO SPEED: wire 0-99 → internal LFRQ 0-255
-            writeVcedGlobal(6, (uint8_t)(((value > 99 ? 99 : value) * 255 + 49) / 99));
+            writeVcedGlobal(6, (uint8_t)(((value > 99 ? 99 : value) * 255 + 49) / 99), false);
             break;
-        case 55: writeVcedGlobal(7, value); break;              // LFO DELAY
-        case 56: writeVcedGlobal(8, value); break;              // PMD
-        case 57: writeVcedGlobal(9, value); break;              // AMD
-        case 58: writeVcedGlobal(10, value); break;             // LFO SYNC
-        case 59: writeVcedGlobal(11, value); break;             // LFO WAVE
+        case 55: writeVcedGlobal(7, value, false); break;       // LFO DELAY
+        case 56: writeVcedGlobal(8, value, false); break;       // PMD
+        case 57: writeVcedGlobal(9, value, false); break;       // AMD
+        case 58: writeVcedGlobal(10, value, false); break;      // LFO SYNC
+        case 59: writeVcedGlobal(11, value, false); break;      // LFO WAVE
         case 60: // PMS — keep current AMS
-            writeVcedGlobal(12, (uint8_t)(((value & 0x07) << 4) | (ramPatch->ams & 0x03)));
+            writeVcedGlobal(12, (uint8_t)(((value & 0x07) << 4) | (ramPatch->ams & 0x03)), false);
             break;
         case 61: // AMS — keep current PMS
-            writeVcedGlobal(12, (uint8_t)(((ramPatch->pms & 0x07) << 4) | (value & 0x03)));
+            writeVcedGlobal(12, (uint8_t)(((ramPatch->pms & 0x07) << 4) | (value & 0x03)), false);
             break;
-        case 62: writeVcedGlobal(13, value > 48 ? 48 : value); break; // TRANSPOSE
+        case 62: writeVcedGlobal(13, value > 48 ? 48 : value, false); break; // TRANSPOSE
 
         // Per-voice function data (also mirrored into the live engine
         // state so the change is audible immediately, like on the
@@ -2234,82 +2262,119 @@ void COPMEmu::applySysexParam(int paramIndex, uint8_t value)
 // Maps DX21 VCED parameter indices to OPM registers.
 // Called from COPMEmuAdapter when parameter sliders change.
 // ===========================================================================
-void COPMEmu::writeVcedGlobal(int param, uint8_t value)
+void COPMEmu::writeVcedGlobal(int param, uint8_t value, bool transmit)
 {
     int voice = m_sysexEditVoice;
-    if (voice < 0 || voice >= kNumVoices) return;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return;
 
     if (m_memoryProt) return;  // FUNCTION #23: slider edit is a write
 
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
     if (!ramPatch) return;
 
+    markEditDirty(ramPatch);   // COMPARE: snapshot the pre-edit state
+
+    // Chip channels currently sounding the edited patch. The edit
+    // slot is a RAM index (0..31) — it is NOT a chip channel, so
+    // per-channel registers (0x20+ch, 0x38+ch) are written for every
+    // channel whose side plays this patch.
+    int chBegin[2] = {0, 0}, chEnd[2] = {0, 0};
+    int nRanges = 0;
+    if (m_patchA == voice) {
+        chBegin[nRanges] = voiceStart(SideA);
+        chEnd[nRanges]   = voiceStart(SideA) + voiceCount(SideA);
+        ++nRanges;
+    }
+    if (m_playMode != Single && m_patchB == voice) {
+        chBegin[nRanges] = voiceStart(SideB);
+        chEnd[nRanges]   = voiceStart(SideB) + voiceCount(SideB);
+        ++nRanges;
+    }
+    auto forEachCh = [&](auto&& fn) {
+        for (int r = 0; r < nRanges; ++r)
+            for (int ch = chBegin[r]; ch < chEnd[r]; ++ch)
+                fn(ch);
+    };
+
+    // VCED number for the real-time transmit (manual table 5-2);
+    // -1 = no transmit for this internal id.
+    int txParam = -1;
+    uint8_t txValue = value;
+
     switch (param) {
         case 0: // Algorithm (0-7)
             ramPatch->alg = value & 0x07;
-            writeField(0x20 + voice, 0, 3, ramPatch->alg);
+            forEachCh([&](int ch) { writeField(0x20 + ch, 0, 3, ramPatch->alg); });
+            txParam = 52; txValue = ramPatch->alg;
             break;
         case 1: // Feedback (0-7)
             ramPatch->fb = value & 0x07;
-            writeField(0x20 + voice, 3, 3, ramPatch->fb);
+            forEachCh([&](int ch) { writeField(0x20 + ch, 3, 3, ramPatch->fb); });
+            txParam = 53; txValue = ramPatch->fb;
             break;
-        case 6: // LFO Speed (0-255)
+        case 6: // LFO Speed (0-255, YM2151 LFRQ; VCED 54 is 0-99)
             ramPatch->lfo_speed = value;
             writeReg(0x18, ramPatch->lfo_speed);
+            txParam = 54;
+            txValue = (uint8_t)((ramPatch->lfo_speed * 99 + 127) / 255);
             break;
         case 7: // LFO Delay (0-127)
             ramPatch->lfo_delay = value & 0x7F;
-            // Note: LFO delay is not a direct OPM register, stored in patch only
+            txParam = 55; txValue = ramPatch->lfo_delay > 99 ? 99 : ramPatch->lfo_delay;
             break;
         case 8: // PMD (Pitch Mod Depth, 0-127)
             ramPatch->pmd = value & 0x7F;
             writeReg(0x19, (ramPatch->pmd & 0x7F) | 0x80);
+            txParam = 56; txValue = ramPatch->pmd > 99 ? 99 : ramPatch->pmd;
             break;
         case 9: // AMD (Amplitude Mod Depth, 0-127)
             ramPatch->amd = value & 0x7F;
             writeReg(0x19, ramPatch->amd & 0x7F);
+            txParam = 57; txValue = ramPatch->amd > 99 ? 99 : ramPatch->amd;
             break;
         case 10: // LFO Sync (0 or 1)
             ramPatch->lfo_sync = value & 0x01;
-            // Note: LFO sync is not directly programmable on YM2151, internal behavior
+            txParam = 58; txValue = ramPatch->lfo_sync;
             break;
-        case 11: // LFO Waveform (0-3: tri, saw, square, s/h)
+        case 11: // LFO Waveform (0-3)
             ramPatch->lfo_wave = value & 0x03;
             writeField(0x1B, 0, 2, ramPatch->lfo_wave);
+            txParam = 59; txValue = ramPatch->lfo_wave;
             break;
-        case 12: // PMS (Pitch Mod Sensitivity, 0-7) + AMS (Amp Mod Sens, 0-3)
-            // VCED byte 8 is packed: (pms << 4) | ams. We re-use the
-            // high nibble (pms) and stash ams in the low nibble of a
-            // synthetic local; for the adapter we route them as two
-            // separate 0..1 params so the user can pick one at a time.
-            // In practice: pms uses the upper 4 bits of the byte, ams
-            // the lower 2 bits. We mirror that here so a future bulk
-            // dump round-trips.
+        case 12: // PMS (0-7) + AMS (0-3), packed (pms << 4) | ams
             ramPatch->pms = (value >> 4) & 0x07;
             ramPatch->ams = value & 0x03;
-            {
-                uint8_t pms_ams = (ramPatch->pms << 4) | (ramPatch->ams & 0x03);
-                writeReg(0x38 + voice, pms_ams);
+            forEachCh([&](int ch) {
+                writeReg(0x38 + ch,
+                         (uint8_t)((ramPatch->pms << 4) | (ramPatch->ams & 0x03)));
+            });
+            // Two separate VCED params on the wire.
+            if (transmit) {
+                transmitParamChange(60, ramPatch->pms);
+                transmitParamChange(61, ramPatch->ams);
             }
             break;
-        case 13: // Key Offset / Transpose (0-48, offset 24 → -24..+24 semitones)
-            // Stored as int8_t in the patch. The adapter will pass
-            // 0..1 normalised, and we map to 0..48 with +24 centre.
+        case 13: // Key Offset / Transpose (0-48, centre 24)
             ramPatch->key_offset = (int8_t)((int)value - 24);
+            txParam = 62; txValue = value > 48 ? 48 : value;
             break;
 
         // Pitch EG (VCED 87-92). Firmware-side feature — no OPM
         // register; stored in the patch and picked up by the next
         // key-on (setupVoice copies the effective PEG per voice).
-        case 14: ramPatch->peg_r[0] = value > 99 ? 99 : value; break; // PR1
-        case 15: ramPatch->peg_r[1] = value > 99 ? 99 : value; break; // PR2
-        case 16: ramPatch->peg_r[2] = value > 99 ? 99 : value; break; // PR3
-        case 17: ramPatch->peg_l[0] = value > 99 ? 99 : value; break; // PL1
-        case 18: ramPatch->peg_l[1] = value > 99 ? 99 : value; break; // PL2
-        case 19: ramPatch->peg_l[2] = value > 99 ? 99 : value; break; // PL3
+        case 14: ramPatch->peg_r[0] = value > 99 ? 99 : value; txParam = 87; txValue = ramPatch->peg_r[0]; break;
+        case 15: ramPatch->peg_r[1] = value > 99 ? 99 : value; txParam = 88; txValue = ramPatch->peg_r[1]; break;
+        case 16: ramPatch->peg_r[2] = value > 99 ? 99 : value; txParam = 89; txValue = ramPatch->peg_r[2]; break;
+        case 17: ramPatch->peg_l[0] = value > 99 ? 99 : value; txParam = 90; txValue = ramPatch->peg_l[0]; break;
+        case 18: ramPatch->peg_l[1] = value > 99 ? 99 : value; txParam = 91; txValue = ramPatch->peg_l[1]; break;
+        case 19: ramPatch->peg_l[2] = value > 99 ? 99 : value; txParam = 92; txValue = ramPatch->peg_l[2]; break;
 
         default:
-            break;
+            return;
+    }
+
+    if (transmit && txParam >= 0) {
+        transmitParamChange(txParam, txValue);
     }
 }
 
@@ -2318,10 +2383,10 @@ void COPMEmu::writeVcedGlobal(int param, uint8_t value)
 // Maps DX21 VCED parameter indices to OPM registers.
 // Called from COPMEmuAdapter when per-op sliders change.
 // ===========================================================================
-void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
+void COPMEmu::writeVcedOperator(int op, int param, uint8_t value, bool transmit)
 {
     int voice = m_sysexEditVoice;
-    if (voice < 0 || voice >= kNumVoices) return;
+    if (voice < 0 || voice >= CDX21Memory::kNumRamVoices) return;
     if (op < 0 || op >= 4) return;
 
     if (m_memoryProt) return;  // FUNCTION #23: slider edit is a write
@@ -2329,89 +2394,135 @@ void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
     DX21_Patch* ramPatch = m_memory.getRamVoice(voice);
     if (!ramPatch) return;
 
+    markEditDirty(ramPatch);   // COMPARE: snapshot the pre-edit state
+
     DX21_Operator& o = ramPatch->op[op];
-    int slot = voice + OP_SLOT[op];
+
+    // Chip channels currently sounding the edited patch (the edit
+    // slot is a RAM index 0..31, not a chip channel — see
+    // writeVcedGlobal).
+    int chBegin[2] = {0, 0}, chEnd[2] = {0, 0};
+    int nRanges = 0;
+    if (m_patchA == voice) {
+        chBegin[nRanges] = voiceStart(SideA);
+        chEnd[nRanges]   = voiceStart(SideA) + voiceCount(SideA);
+        ++nRanges;
+    }
+    if (m_playMode != Single && m_patchB == voice) {
+        chBegin[nRanges] = voiceStart(SideB);
+        chEnd[nRanges]   = voiceStart(SideB) + voiceCount(SideB);
+        ++nRanges;
+    }
+    auto forEachSlot = [&](auto&& fn) {
+        for (int r = 0; r < nRanges; ++r)
+            for (int ch = chBegin[r]; ch < chEnd[r]; ++ch)
+                fn(ch + OP_SLOT[op]);
+    };
 
     switch (param) {
         case 0: // AR (Attack Rate, 0-31)
             o.ar = value & 0x1F;
-            writeField(0x80 + slot, 0, 5, o.ar);
-            break;
-        case 2: // D1R (Decay1 Rate, 0-31)
-            o.d1r = value & 0x1F;
-            writeField(0xA0 + slot, 0, 5, o.d1r);
-            break;
-        case 8: // D1L (Decay1 Level, 0-15)
-            o.d1l = value & 0x0F;
-            {
-                uint8_t d1l = 15 - (o.d1l & 0x0F);
-                uint8_t rr = o.rr & 0x0F;
-                uint8_t d1l_rr = (d1l << 4) | rr;
-                writeReg(0xE0 + slot, d1l_rr);
-            }
-            break;
-        case 10: // OUT (Output Level, 0-99)
-            o.out = value;
-            {
-                uint8_t tl = (99 - o.out) * 127 / 99;
-                if (tl > 127) tl = 127;
-                writeReg(0x60 + slot, 0x80 | (tl & 0x7F));
-            }
-            break;
-        case 11: // CRS (Coarse Ratio, 0-63)
-            o.crs = value & 0x3F;
-            {
-                uint8_t mul = CRS_TO_MUL[o.crs & 0x3F];
-                writeField(0x40 + slot, 0, 4, mul);
-            }
+            forEachSlot([&](int s) { writeField(0x80 + s, 0, 5, o.ar); });
             break;
         case 1: // D2R (Decay 2 Rate, 0-31) -- register 0xC0[4:0]
             o.d2r = value & 0x1F;
-            writeField(0xC0 + slot, 0, 5, o.d2r);
+            forEachSlot([&](int s) { writeField(0xC0 + s, 0, 5, o.d2r); });
+            break;
+        case 2: // D1R (Decay1 Rate, 0-31)
+            o.d1r = value & 0x1F;
+            forEachSlot([&](int s) { writeField(0xA0 + s, 0, 5, o.d1r); });
             break;
         case 3: // RR (Release Rate, 0-15) -- packed in 0xE0[3:0]
             o.rr = value & 0x0F;
-            {
+            forEachSlot([&](int s) {
                 uint8_t d1l = 15 - (o.d1l & 0x0F);
-                uint8_t d1l_rr = (d1l << 4) | o.rr;
-                writeReg(0xE0 + slot, d1l_rr);
-            }
+                writeReg(0xE0 + s, (uint8_t)((d1l << 4) | o.rr));
+            });
             break;
-        case 5: // LS (Level Scaling, 0-99) -- no direct OPM reg, applied per-note
-            o.ls = value;
-            if (o.ls > 99) o.ls = 99;
+        case 5: // LS (Level Scaling, 0-99) -- applied per-note
+            o.ls = value > 99 ? 99 : value;
             break;
         case 6: // RS (Rate Scaling, 0-3) -- packed in 0x80[7:6] with AR
             o.rs = value & 0x03;
-            {
-                uint8_t ks_ar = ((o.rs & 0x03) << 6) | (o.ar & 0x1F);
-                writeReg(0x80 + slot, ks_ar);
-            }
+            forEachSlot([&](int s) {
+                writeReg(0x80 + s, (uint8_t)(((o.rs & 0x03) << 6) | (o.ar & 0x1F)));
+            });
             break;
         case 7: // EBS (EG Bias Sensitivity, 0-7) -- no direct OPM reg
             o.ebs = value & 0x07;
             break;
-        case 13: // AME (AM Enable, 0/1) -- bit 7 of 0xA0
-            o.ame = value & 0x01;
-            {
-                uint8_t ame_d1r = ((o.ame & 0x01) << 7) | (o.d1r & 0x1F);
-                writeReg(0xA0 + slot, ame_d1r);
-            }
+        case 8: // D1L (Decay1 Level, 0-15)
+            o.d1l = value & 0x0F;
+            forEachSlot([&](int s) {
+                uint8_t d1l = 15 - (o.d1l & 0x0F);
+                writeReg(0xE0 + s, (uint8_t)((d1l << 4) | (o.rr & 0x0F)));
+            });
             break;
-        case 9: // KVS (Key Velocity Sensitivity, 0-7) -- no direct OPM reg
+        case 9: // KVS (Key Velocity Sensitivity, 0-7) -- per-note
             o.kvs = value & 0x07;
             break;
-        case 12: // DET (Detune, 0-6: 0=-3,1=-2,2=-1,3=0,4=+1,5=+2,6=+3)
-            o.det = value & 0x07;
-            {
-                uint8_t dt1 = (o.det <= 6) ? DET_TO_DT1[o.det] : 0;
+        case 10: // OUT (Output Level, 0-99 → TL)
+            o.out = value > 99 ? 99 : value;
+            forEachSlot([&](int s) {
+                uint8_t tl = (99 - o.out) * 127 / 99;
+                if (tl > 127) tl = 127;
+                writeReg(0x60 + s, 0x80 | (tl & 0x7F));
+            });
+            break;
+        case 11: // CRS (Coarse Ratio, 0-63 → MUL)
+            o.crs = value & 0x3F;
+            forEachSlot([&](int s) {
+                writeField(0x40 + s, 0, 4, CRS_TO_MUL[o.crs & 0x3F]);
+            });
+            break;
+        case 12: // DET (Detune, 0-6)
+            o.det = (value & 0x07) > 6 ? 6 : (value & 0x07);
+            forEachSlot([&](int s) {
+                uint8_t dt1 = DET_TO_DT1[o.det];
                 uint8_t mul = (o.crs < 64) ? CRS_TO_MUL[o.crs] : 15;
-                uint8_t dt1_mul = (dt1 << 4) | (mul & 0x0F);
-                writeReg(0x40 + slot, dt1_mul);
-            }
+                writeReg(0x40 + s, (uint8_t)((dt1 << 4) | (mul & 0x0F)));
+            });
+            break;
+        case 13: // AME (AM Enable, 0/1) -- bit 7 of 0xA0
+            o.ame = value & 0x01;
+            forEachSlot([&](int s) {
+                writeReg(0xA0 + s, (uint8_t)(((o.ame & 0x01) << 7) | (o.d1r & 0x1F)));
+            });
             break;
         default:
-            break;
+            return;
+    }
+
+    if (transmit) {
+        // VCED number (manual table 5-2): wire op-block order is
+        // OP4, OP2, OP3, OP1; internal op index → wire block is the
+        // self-inverse permutation {3,1,2,0}. Internal param id →
+        // in-block VCED position:
+        static const int kInternalToWireBlock[4] = { 3, 1, 2, 0 };
+        static const int kInternalToVcedSub[14] =
+            //  0  1  2  3   4  5  6  7  8  9  10  11  12  13
+            {   0, 2, 1, 3, -1, 5, 6, 7, 4, 9, 10, 11, 12,  8 };
+        int sub = (param >= 0 && param < 14) ? kInternalToVcedSub[param] : -1;
+        if (sub >= 0) {
+            int vced = kInternalToWireBlock[op] * 13 + sub;
+            uint8_t tx;
+            switch (param) {  // transmit the stored (masked) value
+                case 0:  tx = o.ar;  break;
+                case 1:  tx = o.d2r; break;
+                case 2:  tx = o.d1r; break;
+                case 3:  tx = o.rr;  break;
+                case 5:  tx = o.ls;  break;
+                case 6:  tx = o.rs;  break;
+                case 7:  tx = o.ebs; break;
+                case 8:  tx = o.d1l; break;
+                case 9:  tx = o.kvs; break;
+                case 10: tx = o.out; break;
+                case 11: tx = o.crs; break;
+                case 12: tx = o.det; break;
+                default: tx = o.ame; break;  // 13
+            }
+            transmitParamChange(vced, tx);
+        }
     }
 }
 
@@ -2420,9 +2531,101 @@ void COPMEmu::writeVcedOperator(int op, int param, uint8_t value)
 // ===========================================================================
 void COPMEmu::setSysexEditVoice(int voice)
 {
+    // The edit slot is a RAM voice index (0..31), NOT a chip channel.
     if (voice < 0) voice = 0;
-    if (voice >= kNumVoices) voice = kNumVoices - 1;
+    if (voice >= CDX21Memory::kNumRamVoices)
+        voice = CDX21Memory::kNumRamVoices - 1;
     m_sysexEditVoice = voice;
+}
+
+// ===========================================================================
+// reapplyEditPatch — re-apply the edited patch to every chip voice
+// currently sounding it (side A and/or B).
+// ===========================================================================
+void COPMEmu::reapplyEditPatch(int slot)
+{
+    if (m_patchA == slot) applyPatchToSide(SideA, slot);
+    if (m_playMode != Single && m_patchB == slot) applyPatchToSide(SideB, slot);
+}
+
+// ===========================================================================
+// transmitParamChange — real-time parameter change out
+// F0 43 1n 12 pp vv F7 (manual 2-2-2 (1)); gated on "Midi Sy Info".
+// Called from the panel-edit path (display/input thread), never from
+// the audio callback.
+// ===========================================================================
+void COPMEmu::transmitParamChange(int vcedParam, uint8_t value)
+{
+    if (!m_sysexInfoOn || !m_sysexOutFn) return;
+    if (vcedParam < 0 || vcedParam > 127) return;
+    uint8_t msg[7] = { 0xF0, 0x43, 0x10, 0x12,
+                       (uint8_t)vcedParam, (uint8_t)(value & 0x7F), 0xF7 };
+    m_sysexOutFn(m_sysexOutUser, msg, sizeof(msg));
+}
+
+// ===========================================================================
+// setCompare — audible COMPARE (original vs. edited voice)
+// ===========================================================================
+bool COPMEmu::setCompare(bool on)
+{
+    if (on && !m_bEditDirty) return false;   // nothing to compare yet
+    if (m_bCompare == on) return m_bCompare;
+    m_bCompare = on;
+    // getPatch() now resolves the current program to the snapshot
+    // (or back to the edited RAM data) — re-apply to the chip.
+    reapplyEditPatch(m_currentPatch);
+    return m_bCompare;
+}
+
+// ===========================================================================
+// setVoiceName — rename the current edit voice (FUNCTION "Name :")
+// ===========================================================================
+bool COPMEmu::setVoiceName(const char* name)
+{
+    if (!name) return false;
+    int slot = m_sysexEditVoice;
+    if (slot < 0 || slot >= CDX21Memory::kNumRamVoices) return false;
+    if (m_memoryProt) return false;  // FUNCTION #23: rename is a write
+
+    DX21_Patch* ram = m_memory.getRamVoice(slot);
+    if (!ram) return false;
+
+    markEditDirty(ram);
+
+    int i = 0;
+    for (; i < 10 && name[i] != '\0'; ++i) {
+        char c = name[i];
+        ram->name[i] = (c >= 0x20 && c < 0x7F) ? c : ' ';
+    }
+    ram->name[i] = '\0';
+
+    // Transmit the name as VCED params 77-86 (space-padded).
+    for (int t = 0; t < 10; ++t) {
+        transmitParamChange(77 + t, (t < i) ? (uint8_t)ram->name[t] : (uint8_t)' ');
+    }
+    return true;
+}
+
+// ===========================================================================
+// capturePerformance — snapshot the live engine state (Store Perf)
+// ===========================================================================
+void COPMEmu::capturePerformance(DX21_Performance& out) const
+{
+    out.initDefaults();
+    out.playMode   = (uint8_t)m_playMode;
+    out.voiceA     = (uint8_t)m_patchA;
+    out.voiceB     = (uint8_t)m_patchB;
+    out.splitPoint = (uint8_t)m_splitPoint;
+    out.balance    = (uint8_t)m_balance;
+    out.pbRange    = (uint8_t)m_pbRange;
+    out.pbMode     = (uint8_t)m_pbMode;
+    out.portaMode  = (uint8_t)m_portaMode;
+    out.portaRate  = (uint8_t)m_portaRate;
+    out.chorus     = m_ensembleOn ? 1 : 0;
+    out.transpose  = (int8_t)m_masterTune;   // mirrors applyPerformance
+    out.breathPitch  = (uint8_t)m_breathPitchBias;
+    out.breathAmp    = (uint8_t)m_breathAmplitude;
+    out.breathEGBias = (uint8_t)m_breathEGBias;
 }
 
 // ----------------------------------------------------------------------------

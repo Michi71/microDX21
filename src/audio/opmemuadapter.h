@@ -313,6 +313,9 @@ public:
                 int prog = (int)(value * (n - 1) + 0.5f);
                 m_synth->setCurrentProgram(prog);
                 m_currentProgram = prog;
+                // Manual: pressing a voice selector in PLAY mode
+                // transmits the voice as a 1-voice dump (Sy Info ON).
+                transmitVoiceIfEnabled(prog);
                 break;
             }
             case kParamMasterGain:
@@ -761,6 +764,7 @@ public:
         if (!m_synth || id < 0) return;
         m_synth->setCurrentProgram(id);
         m_currentProgram = id;
+        transmitVoiceIfEnabled(id);  // panel voice select → 1-voice dump
     }
 
     int getInstrument()
@@ -867,6 +871,7 @@ public:
         SaveFailed,    // saveRamBank returned false
         LoadFailed,    // loadRamBank returned false
         VerifyMismatch,// load succeeded but voice count differs
+        Protected,     // rejected by Memory Protect (FUNCTION #23)
         NotImplemented // shouldn't happen
     };
 
@@ -878,29 +883,37 @@ public:
             case MemoryResult::SaveFailed:     return "SAVE FAILED";
             case MemoryResult::LoadFailed:     return "LOAD FAILED";
             case MemoryResult::VerifyMismatch: return "VERIFY MISMATCH";
+            case MemoryResult::Protected:      return "MEM PROTECTED";
             default:                            return "ERR";
         }
     }
 
-    // Save the 32 RAM voices to SD:/MICRODX21/BANK_NN/ as JSON.
-    // group is 0..15. Returns the result for status display.
+    // Save the 32 RAM voices to SD:/MICRODX21/BANK_NN/ as JSON, plus
+    // the 32 performance memories to SD:/MICRODX21/performances.json
+    // (top level — one set shared across banks, matching the SD
+    // skeleton). group is 0..15. Returns the result for status display.
     MemoryResult saveRamBankToFile(int group) {
         if (!m_pFS) return MemoryResult::NoFS;
         if (group < 0 || group >= 16) return MemoryResult::SaveFailed;
         char path[64];
         snprintf(path, sizeof(path), "MICRODX21/BANK_%02d", group + 1);
         bool ok = m_synth->saveRamBank(path);
+        // Performance save is best-effort: a missing/failed write
+        // doesn't fail the bank save.
+        m_synth->savePerformanceBank("MICRODX21/performances.json");
         return ok ? MemoryResult::Ok : MemoryResult::SaveFailed;
     }
 
-    // Load 32 voices from SD:/MICRODX21/BANK_NN/ into RAM. Voices not
-    // present in the bank directory are left untouched in RAM.
+    // Load 32 voices from SD:/MICRODX21/BANK_NN/ into RAM (plus the
+    // shared performance bank, best-effort). Voices not present in
+    // the bank directory are left untouched in RAM.
     MemoryResult loadRamBankFromFile(int group) {
         if (!m_pFS) return MemoryResult::NoFS;
         if (group < 0 || group >= 16) return MemoryResult::LoadFailed;
         char path[64];
         snprintf(path, sizeof(path), "MICRODX21/BANK_%02d", group + 1);
         bool ok = m_synth->loadRamBank(path);
+        m_synth->loadPerformanceBank("MICRODX21/performances.json");
         return ok ? MemoryResult::Ok : MemoryResult::LoadFailed;
     }
 
@@ -950,6 +963,119 @@ public:
         std::vector<uint8_t> data;
         if (!m_synth->exportCurrentVoiceSysex(data)) return false;
         m_sysexOutFn(m_sysexOutUser, data.data(), data.size());
+        return true;
+    }
+
+    // Transmit program `prog` as a 1-voice VCED dump if "Midi Sy
+    // Info" is ON. The manual specifies that the DX21 dumps the
+    // voice whenever a voice selector is pressed in PLAY mode —
+    // this is the panel-side hook (called from the instrument-select
+    // paths below, never from incoming MIDI).
+    void transmitVoiceIfEnabled(int prog) {
+        if (!m_synth || !m_sysexOutFn) return;
+        if (!m_synth->getMidiSysexInfoOn()) return;
+        const DX21_Patch* p = m_synth->getPatch(prog);
+        if (!p) return;
+        std::vector<uint8_t> data;
+        if (!m_synth->memory().exportVoiceSysex(*p, data)) return;
+        m_sysexOutFn(m_sysexOutUser, data.data(), data.size());
+    }
+
+    // ── COMPARE (audible) ─────────────────────────────────────
+    bool setCompare(bool on) { return m_synth ? m_synth->setCompare(on) : false; }
+    bool getCompare() const  { return m_synth && m_synth->getCompare(); }
+
+    // ── Voice name (FUNCTION "Name :") ────────────────────────
+    bool SetVoiceName(const char* name) {
+        return m_synth && m_synth->setVoiceName(name);
+    }
+
+    // ── MEMORY-mode actions: STORE / ROM load / performances ──
+
+    // Store the current edit voice into RAM slot 0..31 (panel STORE).
+    MemoryResult StoreVoice(int slot) {
+        if (!m_synth) return MemoryResult::NotImplemented;
+        if (slot < 0 || slot >= CDX21Memory::kNumRamVoices)
+            return MemoryResult::SaveFailed;
+        if (m_synth->isMemoryProtected()) return MemoryResult::Protected;
+        const DX21_Patch* p = m_synth->getPatch(m_synth->getCurrentProgram());
+        if (!p) return MemoryResult::SaveFailed;
+        return m_synth->memory().setRamVoice(slot, *p)
+            ? MemoryResult::Ok : MemoryResult::SaveFailed;
+    }
+
+    // A11 "LOAD INTERNAL MEMORY": copy ROM group 0..15 (8 voices)
+    // into RAM bank 0..3 (slots bank*8 .. bank*8+7).
+    MemoryResult LoadRomGroup(int group, int bank) {
+        if (!m_synth) return MemoryResult::NotImplemented;
+        if (group < 0 || group > 15 || bank < 0 || bank > 3)
+            return MemoryResult::LoadFailed;
+        if (m_synth->isMemoryProtected()) return MemoryResult::Protected;
+        for (int i = 0; i < 8; ++i) {
+            if (!m_synth->memory().setRamVoice(bank * 8 + i,
+                                               dx21_patches[group * 8 + i]))
+                return MemoryResult::LoadFailed;
+        }
+        return MemoryResult::Ok;
+    }
+
+    // A12 "LOAD SINGLE INTERNAL MEMORY": copy one ROM voice 0..127
+    // into RAM slot 0..31.
+    MemoryResult LoadRomVoice(int romIdx, int slot) {
+        if (!m_synth) return MemoryResult::NotImplemented;
+        if (romIdx < 0 || romIdx >= TOTAL_OPM_PATCHES) return MemoryResult::LoadFailed;
+        if (slot < 0 || slot >= CDX21Memory::kNumRamVoices)
+            return MemoryResult::LoadFailed;
+        if (m_synth->isMemoryProtected()) return MemoryResult::Protected;
+        return m_synth->memory().setRamVoice(slot, dx21_patches[romIdx])
+            ? MemoryResult::Ok : MemoryResult::LoadFailed;
+    }
+
+    // ROM voice name for the A12 picker display.
+    const char* GetRomVoiceName(int romIdx) const {
+        if (romIdx < 0 || romIdx >= TOTAL_OPM_PATCHES) return "";
+        return dx21_patches[romIdx].name;
+    }
+
+    // Store the live engine setup into performance slot 0..31.
+    MemoryResult StorePerformance(int slot) {
+        if (!m_synth) return MemoryResult::NotImplemented;
+        if (slot < 0 || slot >= CDX21Memory::kNumPerformances)
+            return MemoryResult::SaveFailed;
+        if (m_synth->isMemoryProtected()) return MemoryResult::Protected;
+        DX21_Performance perf;
+        m_synth->capturePerformance(perf);
+        char name[16];
+        snprintf(name, sizeof(name), "PERF %02d", slot + 1);
+        perf.setName(name);
+        return m_synth->memory().setPerformance(slot, perf)
+            ? MemoryResult::Ok : MemoryResult::SaveFailed;
+    }
+
+    // Apply performance slot 0..31 to the engine. Returns false if
+    // the slot is empty.
+    bool ApplyPerformance(int slot) {
+        if (!m_synth) return false;
+        if (!m_synth->memory().getPerformance(slot)) return false;
+        m_synth->applyPerformance(slot);
+        return true;
+    }
+
+    // Read-only info for the PERFORMANCE-mode renderer. Returns
+    // false (and leaves the outputs untouched) for empty slots.
+    bool GetPerformanceInfo(int slot, char* name, size_t nameSize,
+                            int* playMode, int* voiceA, int* voiceB) {
+        if (!m_synth) return false;
+        const DX21_Performance* p = m_synth->memory().getPerformance(slot);
+        if (!p) return false;
+        if (name && nameSize > 0) {
+            size_t n = sizeof(p->name) < nameSize - 1 ? sizeof(p->name) : nameSize - 1;
+            std::memcpy(name, p->name, n);
+            name[n] = '\0';
+        }
+        if (playMode) *playMode = p->playMode;
+        if (voiceA)   *voiceA   = p->voiceA;
+        if (voiceB)   *voiceB   = p->voiceB;
         return true;
     }
 

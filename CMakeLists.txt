@@ -62,4 +62,9 @@ target_include_directories(test_sysex_dump PRIVATE src)
 target_link_libraries(test_sysex_dump opmemu)
 add_test(NAME sysex_dump COMMAND test_sysex_dump)
 
+add_executable(test_voice_workflow tests/test_voice_workflow.cpp)
+target_include_directories(test_voice_workflow PRIVATE src)
+target_link_libraries(test_voice_workflow opmemu)
+add_test(NAME voice_workflow COMMAND test_voice_workflow)
+
 add_test(NAME voice_stealing COMMAND test_voice_stealing)

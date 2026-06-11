@@ -516,40 +516,51 @@ void CDX21Display::RenderEditMode() {
 
 void CDX21Display::RenderPerformanceMode() {
     char line[32];
-    char nameBuf[17] = {0};
 
+    // The 32 performance memories. m_PerfSlot is the slot the last
+    // AdjustValue() applied; the renderer reads the slot's stored
+    // data through the adapter. Empty slots render as "-- EMPTY --".
+    char perfName[17] = {0};
+    int  playMode = -1, voiceA = -1, voiceB = -1;
+    bool valid = false;
     if (m_pAdapter) {
-        m_pAdapter->getInstrumentName(nameBuf, sizeof(nameBuf));
-    } else if (m_VoiceName) {
-        strncpy(nameBuf, m_VoiceName, sizeof(nameBuf) - 1);
-        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        valid = m_pAdapter->GetPerformanceInfo(m_PerfSlot, perfName,
+                                               sizeof(perfName),
+                                               &playMode, &voiceA, &voiceB);
     }
 
-    // Page 0: "PERFORM  NNN"
-    snprintf(line, sizeof(line), "%-9s %3d      ",
-             MODE_TITLE_PERFORMANCE, m_VoiceNum);
+    // Page 0: "PERFORM  NN/32" (+ play-mode tag like the original LCD)
+    static const char* kModeTag[3] = { "SI", "DU", "SP" };
+    const char* tag = (valid && playMode >= 0 && playMode < 3)
+        ? kModeTag[playMode] : "--";
+    snprintf(line, sizeof(line), "%-7s%s %2d/32  ",
+             MODE_TITLE_PERFORMANCE, tag, m_PerfSlot + 1);
     DrawText6x8(0, 0, line, 16);
 
-    // Page 1: voice name (or "BUFF" when COMPARE is active)
+    // Page 1: performance name (or "BUFF" when COMPARE is active)
     if (m_bCompare) {
         DrawBigString(0, 8, "BUFF");
+    } else if (valid) {
+        DrawBigString(0, 8, perfName);
     } else {
-        DrawBigString(0, 8, nameBuf);
+        DrawBigString(0, 8, "----");
     }
 
-    // Page 2: sub-label
-    const char* pname = (m_ParamIdx >= 0 && m_ParamIdx < PLAY_LABEL_COUNT)
-        ? PLAY_LABELS[m_ParamIdx]
-        : "                ";
-    DrawText6x8(0, 16, pname, 16);
+    // Page 2: programmed voices "A:NNN B:NNN" (manual: lower LCD line)
+    if (valid) {
+        snprintf(line, sizeof(line), "A:%3d  B:%3d    ",
+                 voiceA + 1, voiceB + 1);
+    } else {
+        snprintf(line, sizeof(line), "-- EMPTY --     ");
+    }
+    DrawText6x8(0, 16, line, 16);
 
-    // Page 3: bank / status
+    // Page 3: status / hint
     if (m_Status) {
         snprintf(line, sizeof(line), "%-16.16s", m_Status);
+        DrawText6x8(0, 24, line, 16);
     } else {
-        int bankIdx = (m_VoiceNum - 1) / 16;
-        const char* bankLabel = (bankIdx < 4) ? BANK_LABELS[bankIdx] : "B9-B16";
-        DrawText6x8(0, 24, bankLabel, 16);
+        DrawText6x8(0, 24, "EDIT=APPLY      ", 16);
     }
 }
 
@@ -567,17 +578,25 @@ void CDX21Display::RenderFunctionMode() {
         : "                ";
     DrawBigString(0, 8, fname);
 
-    // Page 2: value (numeric, ON/OFF, or "n/a")
-    int value = ReadFunctionValue(m_pAdapter, m_ParamIdx);
-    if (m_ValueStr) {
-        snprintf(line, sizeof(line), "%-16.16s", m_ValueStr);
-    } else if (value >= 0) {
-        // Show as =NN with a 0..255 raw byte value.
-        snprintf(line, sizeof(line), "=%-15d", value);
+    // Page 2: value (numeric, ON/OFF, "n/a") — or the name editor.
+    if (m_bNameEdit) {
+        // "Name:XXXXXXXXXX" with an underline cursor below the
+        // character being edited.
+        snprintf(line, sizeof(line), "Name:%-10.10s ", m_NameBuf);
+        DrawText6x8(0, 16, line, 16);
+        DrawCursor((5 + m_NamePos) * 6, 23, 6, 1);
     } else {
-        snprintf(line, sizeof(line), "=n/a           ");
+        int value = ReadFunctionValue(m_pAdapter, m_ParamIdx);
+        if (m_ValueStr) {
+            snprintf(line, sizeof(line), "%-16.16s", m_ValueStr);
+        } else if (value >= 0) {
+            // Show as =NN with a 0..255 raw byte value.
+            snprintf(line, sizeof(line), "=%-15d", value);
+        } else {
+            snprintf(line, sizeof(line), "=n/a           ");
+        }
+        DrawText6x8(0, 16, line, 16);
     }
-    DrawText6x8(0, 16, line, 16);
 
     // Page 3: status
     if (m_Status) {
@@ -591,44 +610,54 @@ void CDX21Display::RenderFunctionMode() {
 void CDX21Display::RenderMemoryMode() {
     char line[32];
 
-    // The MEMORY screen is a 3-stage state machine:
-    //   stage 0: pick action  (Save / Load / Verify)
+    // The MEMORY screen is a multi-stage state machine:
+    //   stage 0: pick action  (7 actions, see header)
     //   stage 1: confirm      (YES / NO)
-    //   stage 2: pick group   (1..16)
+    //   stage 2: first picker (group / slot / ROM voice)
+    //   stage 4: second picker (bank / destination slot; actions 4/5)
     //   stage 3: result-shown (OK / FAILED, 2 s)
-    //
-    // In stages 0 and 2, m_ParamIdx is the cursor (legacy
-    // SelectParam/AdjustValue path). In stage 1, m_ParamIdx is unused
-    // (we use m_MemoryYesNo for the toggle). In stage 3, no input is
-    // accepted until the next click.
 
-    // Page 0: "MEMORY  STAGE"
+    static const char* kActBig[kMemoryActionCount] =
+        { "SAVE", "LOAD", "VRFY", "STOR", "ROMG", "ROMV", "PERF" };
+    static const char* kActHint[kMemoryActionCount] = {
+        "Save to SD    ?",
+        "Load from SD  ?",
+        "Verify SD     ?",
+        "Store Voice   ?",
+        "Group to Bank ?",
+        "Voice to Slot ?",
+        "Store Perform.?",
+    };
+
+    // Page 0: "MEMORY  <stage>"
     if (m_MemoryStage == 1) {
         snprintf(line, sizeof(line), "%-9s YES/NO ", MODE_TITLE_MEMORY);
     } else if (m_MemoryStage == 2) {
-        snprintf(line, sizeof(line), "%-9s GRP %2d ", MODE_TITLE_MEMORY, m_MemoryGroup + 1);
+        snprintf(line, sizeof(line), "%-9s PICK%3d", MODE_TITLE_MEMORY, m_MemoryGroup + 1);
+    } else if (m_MemoryStage == 4) {
+        snprintf(line, sizeof(line), "%-9s DEST%3d", MODE_TITLE_MEMORY, m_MemorySlot + 1);
     } else if (m_MemoryStage == 3) {
         snprintf(line, sizeof(line), "%-9s DONE   ", MODE_TITLE_MEMORY);
     } else {
-        snprintf(line, sizeof(line), "%-9s ACT %d  ", MODE_TITLE_MEMORY, m_MemoryAction);
+        snprintf(line, sizeof(line), "%-9s ACT %d  ", MODE_TITLE_MEMORY, m_MemoryAction + 1);
     }
     DrawText6x8(0, 0, line, 16);
 
-    // Page 1: big text — the action name / YES/NO / group number / result
+    // Page 1: big text — action name / YES/NO / picker value / result.
     if (m_MemoryStage == 0) {
-        // Show the action name in big 7-seg.
-        static const char* kActNames[3] = { "SAVE", "LOAD", "VRFY" };
-        DrawBigString(0, 8, kActNames[m_MemoryAction]);
+        DrawBigString(0, 8, kActBig[m_MemoryAction]);
     } else if (m_MemoryStage == 1) {
         DrawBigString(0, 8, m_MemoryYesNo ? "YES" : "NO");
     } else if (m_MemoryStage == 2) {
-        // Show the group number in big 7-seg, e.g. "G05" / "G12".
         char gbuf[16];
-        snprintf(gbuf, sizeof(gbuf), "G%2d", (int)(m_MemoryGroup + 1));
+        snprintf(gbuf, sizeof(gbuf), "%3d", (int)(m_MemoryGroup + 1));
+        DrawBigString(0, 8, gbuf);
+    } else if (m_MemoryStage == 4) {
+        char gbuf[16];
+        snprintf(gbuf, sizeof(gbuf), "%3d", (int)(m_MemorySlot + 1));
         DrawBigString(0, 8, gbuf);
     } else {
-        // stage 3: result. Look up the result string from the adapter
-        // (or fall back to a generic message).
+        // stage 3: result string from the adapter.
         const char* rs = "OK";
         if (m_pAdapter) {
             rs = COPMEmuAdapter::MemoryResultString(
@@ -637,42 +666,32 @@ void CDX21Display::RenderMemoryMode() {
         DrawBigString(0, 8, rs);
     }
 
-    // Page 2: hint line. In stage 0/2 it's the action or group label.
-    // In stage 1 it's the confirm question. In stage 3 it's blank.
-    if (m_MemoryStage == 0) {
-        // m_ParamIdx (0..2) is the action cursor; show its label.
-        const char* an = "                ";
-        if (m_ParamIdx >= 0 && m_ParamIdx < 3) {
-            static const char* kLabels[3] = {
-                "Save to Tape  ?",
-                "Load from Tape?",
-                "Verify    Tape?",
-            };
-            an = kLabels[m_ParamIdx];
-        }
-        DrawText6x8(0, 16, an, 16);
-    } else if (m_MemoryStage == 1) {
-        const char* q = (m_MemoryAction == 0) ? "Save to SD?"
-                      : (m_MemoryAction == 1) ? "Load from SD?"
-                                              : "Verify SD?";
-        DrawText6x8(0, 16, q, 16);
+    // Page 2: hint line.
+    if (m_MemoryStage == 0 || m_MemoryStage == 1 || m_MemoryStage == 3) {
+        DrawText6x8(0, 16, kActHint[m_MemoryAction], 16);
     } else if (m_MemoryStage == 2) {
-        // Show "GROUP (N) ?" as the hint for the current group.
-        const char* gn = "                ";
-        int labelIdx = TAPE_GROUP_FIRST + m_MemoryGroup;
-        if (labelIdx >= 0 && labelIdx < TAPE_LABEL_COUNT) {
-            gn = TAPE_LABELS[labelIdx];
+        if (m_MemoryAction == 5 && m_pAdapter) {
+            // ROM voice picker: show the voice's name.
+            snprintf(line, sizeof(line), "%-16.16s",
+                     m_pAdapter->GetRomVoiceName(m_MemoryGroup));
+            DrawText6x8(0, 16, line, 16);
+        } else if (m_MemoryAction == 3 || m_MemoryAction == 6) {
+            DrawText6x8(0, 16, "Slot (1-32) ?   ", 16);
+        } else if (m_MemoryAction == 4) {
+            DrawText6x8(0, 16, "Group (1-16) ?  ", 16);
+        } else {
+            // SD actions: bank-group label from TAPE_LABELS.
+            const char* gn = "Group (1-16) ?  ";
+            int labelIdx = TAPE_GROUP_FIRST + m_MemoryGroup;
+            if (labelIdx >= 0 && labelIdx < TAPE_LABEL_COUNT) {
+                gn = TAPE_LABELS[labelIdx];
+            }
+            DrawText6x8(0, 16, gn, 16);
         }
-        DrawText6x8(0, 16, gn, 16);
-    } else {
-        // stage 3: status hint (the actual result message lives on
-        // page 1 in big; the hint on page 2 is the action name).
-        const char* an = "                ";
-        if (m_MemoryAction >= 0 && m_MemoryAction < 3) {
-            static const char* kActNames[3] = { "SAVE", "LOAD", "VERIFY" };
-            an = kActNames[m_MemoryAction];
-        }
-        DrawText6x8(0, 16, an, 16);
+    } else {  // stage 4
+        DrawText6x8(0, 16,
+                    (m_MemoryAction == 4) ? "Bank (1-4) ?    "
+                                          : "Slot (1-32) ?   ", 16);
     }
 
     // Page 3: status / hint / blank.
@@ -720,7 +739,7 @@ int CDX21Display::GetParamCountForMode() const {
     switch (m_Mode) {
         case kModePlay:        return 128;                       // 1..128 voices
         case kModeEdit:        return EDIT_PARAM_COUNT;
-        case kModePerformance: return PLAY_LABEL_COUNT;
+        case kModePerformance: return 32;                        // 32 performances
         case kModeFunction:    return FUNCTION_COUNT;
         case kModeMemory:      return TAPE_LABEL_COUNT;
     }
@@ -765,14 +784,24 @@ int CDX21Display::AdjustValue(int delta) {
 
     switch (m_Mode) {
         case kModePlay:
-        case kModePerformance:
-            // Both modes use the same voice cursor. PLAY shows
-            // 1..128, PERFORMANCE uses the same range (we don't have
-            // a separate 32-perf memory store yet — that's a future
-            // step once the user wires up a second encoder or
-            // button). Delta moves the voice by ±1.
+            // Voice select 1..128 (kParamInstrument).
             kp = kParamInstrument;
             break;
+
+        case kModePerformance: {
+            // Step the performance slot 1..32 and apply it. Empty
+            // slots are reported in the status line; the slot cursor
+            // still moves so the user can reach stored slots beyond
+            // an empty one.
+            int slot = m_PerfSlot + delta;
+            slot %= 32;
+            if (slot < 0) slot += 32;
+            m_PerfSlot = slot;
+            bool ok = m_pAdapter->ApplyPerformance(slot);
+            SetStatus(ok ? "PERF APPLIED" : "EMPTY PERF");
+            MarkDirty();
+            return slot + 1;
+        }
 
         case kModeEdit:
             if (m_ParamIdx < 0 || m_ParamIdx >= EDIT_PARAM_COUNT) return -1;
@@ -867,13 +896,94 @@ bool CDX21Display::TriggerFunctionAction() {
             }
             MarkDirty();
             return true;
+        case 45: { // B16: Name : — enter the voice-name editor.
+            char cur[17] = {0};
+            m_pAdapter->getInstrumentName(cur, sizeof(cur));
+            bool ended = false;
+            for (int i = 0; i < 10; ++i) {
+                if (!ended && cur[i] == '\0') ended = true;
+                char c = ended ? ' ' : cur[i];
+                m_NameBuf[i] = (c >= 0x20 && c < 0x7F) ? c : ' ';
+            }
+            m_NameBuf[10] = '\0';
+            m_NamePos = 0;
+            m_bNameEdit = true;
+            SetStatus("NAME EDIT");
+            MarkDirty();
+            return true;
+        }
     }
     return false;
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Voice-name editor (FUNCTION "Name :")
+// ────────────────────────────────────────────────────────────────────
+
+// Character set cycled by encoder rotation. Mirrors the characters
+// printed in white on the original panel (plus lowercase).
+static const char kNameChars[] =
+    " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-./";
+static const int kNameCharCount = (int)sizeof(kNameChars) - 1;
+
+void CDX21Display::NameEditChangeChar(int delta) {
+    if (!m_bNameEdit) return;
+    if (m_NamePos < 0 || m_NamePos > 9) return;
+    char cur = m_NameBuf[m_NamePos];
+    int idx = 0;
+    for (int i = 0; i < kNameCharCount; ++i) {
+        if (kNameChars[i] == cur) { idx = i; break; }
+    }
+    idx = (idx + delta) % kNameCharCount;
+    if (idx < 0) idx += kNameCharCount;
+    m_NameBuf[m_NamePos] = kNameChars[idx];
+    MarkDirty();
+}
+
+bool CDX21Display::NameEditClick() {
+    if (!m_bNameEdit) return false;
+    if (m_NamePos < 9) {
+        ++m_NamePos;
+        MarkDirty();
+        return false;
+    }
+    // Last position: commit. Trim trailing spaces and write the name
+    // through the adapter (Memory Protect is enforced in the engine).
+    char buf[11];
+    memcpy(buf, m_NameBuf, sizeof(buf));
+    for (int i = 9; i >= 0 && buf[i] == ' '; --i) buf[i] = '\0';
+    bool ok = m_pAdapter && m_pAdapter->SetVoiceName(buf);
+    m_bNameEdit = false;
+    m_NamePos = 0;
+    SetStatus(ok ? "NAME STORED" : "NAME REJECTED");
+    MarkDirty();
+    return true;
+}
+
+// Range of the FIRST picker (stage 2) per action: SD actions pick a
+// group 1-16, Store Voice / Store Perf pick a slot 1-32, ROM
+// Grp→Bank picks the ROM group 1-16, ROM Voice→Slot picks the ROM
+// voice 1-128.
+static int MemoryPicker1Range(int action) {
+    switch (action) {
+        case 0: case 1: case 2: return 16;   // SD group
+        case 3:                 return 32;   // RAM slot
+        case 4:                 return 16;   // ROM group
+        case 5:                 return 128;  // ROM voice
+        case 6:                 return 32;   // performance slot
+    }
+    return 16;
+}
+
+// Range of the SECOND picker (stage 4): bank 1-4 for ROM Grp→Bank,
+// RAM slot 1-32 for ROM Voice→Slot.
+static int MemoryPicker2Range(int action) {
+    return (action == 4) ? 4 : 32;
+}
+
 void CDX21Display::MemoryPickAction(int delta) {
     if (m_MemoryStage != 0) return;
-    int n = 3;  // Save, Load, Verify
+    int n = kMemoryActionCount;
     int a = m_MemoryAction + delta;
     a %= n;
     if (a < 0) a += n;
@@ -887,11 +997,22 @@ void CDX21Display::MemoryToggleYesNo() {
     MarkDirty();
 }
 
+void CDX21Display::MemoryPickSlot(int delta) {
+    if (m_MemoryStage != 4) return;
+    int n = MemoryPicker2Range(m_MemoryAction);
+    int s = m_MemorySlot + delta;
+    s %= n;
+    if (s < 0) s += n;
+    m_MemorySlot = s;
+    MarkDirty();
+}
+
 void CDX21Display::MemoryPickGroup(int delta) {
     if (m_MemoryStage != 2) return;
+    int n = MemoryPicker1Range(m_MemoryAction);
     int g = m_MemoryGroup + delta;
-    g %= 16;
-    if (g < 0) g += 16;
+    g %= n;
+    if (g < 0) g += n;
     m_MemoryGroup = g;
     MarkDirty();
 }
@@ -907,23 +1028,39 @@ void CDX21Display::MemoryConfirm() {
         m_MemoryStage = 1;
         m_MemoryYesNo = 0;  // default NO
         MarkDirty();
-    } else if (m_MemoryStage == 1) {
+        return;
+    }
+    if (m_MemoryStage == 1) {
         if (m_MemoryYesNo == 0) {
             m_MemoryStage = 0;  // back to pick
         } else {
-            m_MemoryStage = 2;  // group select
+            m_MemoryStage = 2;  // first picker
+            m_MemoryGroup %= MemoryPicker1Range(m_MemoryAction);
         }
         MarkDirty();
-    } else if (m_MemoryStage == 2) {
-        // Execute. We invoke the adapter directly. The adapter's
-        // MemoryResult enum is mapped to a small int for m_MemoryResult.
+        return;
+    }
+    if (m_MemoryStage == 2 && (m_MemoryAction == 4 || m_MemoryAction == 5)) {
+        // ROM Grp→Bank / ROM Voice→Slot need the destination picker.
+        m_MemoryStage = 4;
+        m_MemorySlot %= MemoryPicker2Range(m_MemoryAction);
+        MarkDirty();
+        return;
+    }
+    if (m_MemoryStage == 2 || m_MemoryStage == 4) {
+        // Execute. The adapter's MemoryResult enum is mapped to a
+        // small int for m_MemoryResult.
         if (m_pAdapter) {
             COPMEmuAdapter::MemoryResult r;
             switch (m_MemoryAction) {
-                case 0:  r = m_pAdapter->saveRamBankToFile(m_MemoryGroup); break;
+                case 0:  r = m_pAdapter->saveRamBankToFile(m_MemoryGroup);   break;
                 case 1:  r = m_pAdapter->loadRamBankFromFile(m_MemoryGroup); break;
-                case 2:  r = m_pAdapter->verifyRamBank(m_MemoryGroup);     break;
-                default: r = COPMEmuAdapter::MemoryResult::NotImplemented; break;
+                case 2:  r = m_pAdapter->verifyRamBank(m_MemoryGroup);       break;
+                case 3:  r = m_pAdapter->StoreVoice(m_MemoryGroup);          break;
+                case 4:  r = m_pAdapter->LoadRomGroup(m_MemoryGroup, m_MemorySlot); break;
+                case 5:  r = m_pAdapter->LoadRomVoice(m_MemoryGroup, m_MemorySlot); break;
+                case 6:  r = m_pAdapter->StorePerformance(m_MemoryGroup);    break;
+                default: r = COPMEmuAdapter::MemoryResult::NotImplemented;   break;
             }
             m_MemoryResult = (int)r;
             // Show a status string for ~2 s.
@@ -935,13 +1072,13 @@ void CDX21Display::MemoryConfirm() {
         m_MemoryResultMs = CTimer::Get()->GetTicks() * 1000 / 1000000;
         m_MemoryStage = 3;
         MarkDirty();
-    } else {
-        // stage 3: back to pick
-        m_MemoryStage = 0;
-        m_MemoryResult = -1;
-        ClearStatus();
-        MarkDirty();
+        return;
     }
+    // stage 3: back to pick
+    m_MemoryStage = 0;
+    m_MemoryResult = -1;
+    ClearStatus();
+    MarkDirty();
 }
 
 void CDX21Display::RenderSplashMode() {

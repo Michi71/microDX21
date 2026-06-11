@@ -9,6 +9,49 @@ All notable changes to microDX21, in reverse chronological order.
 > Synth engine, Memory Protect, Build, Fixed, and Test coverage
 > sub-sections further down describe the **post-0.1.0** work.
 
+### Added (post-0.1.0, manual-comparison pass II — UI workflows)
+- **Audible COMPARE** (double-click in PLAY/EDIT/PERFORMANCE): the
+  first edit after a program change snapshots the pre-edit voice;
+  COMPARE makes `getPatch()` serve the snapshot so held and new notes
+  sound the ORIGINAL voice while the edits stay in RAM. Refused with
+  "NO EDITS YET" when nothing was edited (matches the real DX21);
+  program change resets the compare context.
+- **Edit transmit**: panel edits send real-time parameter changes
+  (`F0 43 1n 12 pp vv F7`, real VCED numbering 0-92) when "Midi Sy
+  Info" is ON; selecting a voice on the panel additionally transmits
+  the 1-voice VCED dump (manual: transmission data 2-2-2). Incoming
+  MIDI parameter changes are applied with `transmit=false` so they
+  never echo back out.
+- **MEMORY mode grew from 3 to 7 actions** (new two-picker stage for
+  source+destination): Store Voice (edit voice → RAM slot 1-32,
+  the panel STORE), ROM Grp→Bank (A11: ROM group 1-16 → RAM bank
+  1-4), ROM Voice→Slot (A12: any of the 128 ROM voices, picker shows
+  the voice name), Store Perf (live setup → performance slot 1-32).
+  SD Save/Load now also persist `MICRODX21/performances.json`.
+  All store paths honour Memory Protect (new result "MEM PROTECTED").
+- **PERFORMANCE mode is operable**: value-rotation steps through the
+  32 performance memories and applies them (`applyPerformance`, now
+  incl. chorus); the display shows the performance name, play-mode
+  tag (SI/DU/SP) and programmed voices A/B; empty slots render as
+  "-- EMPTY --". `capturePerformance()` snapshots the live engine
+  state for the MEMORY "Store Perf" action.
+- **Voice-name editor** (FUNCTION #45 "Name :"): click opens the
+  editor, rotation cycles the character under the underline cursor,
+  click advances, the last click commits through
+  `COPMEmu::setVoiceName()` (Memory Protect enforced, name bytes
+  transmitted as VCED params 77-86).
+- **Edit-slot fix**: `m_sysexEditVoice` was clamped to chip channels
+  (0-7) and used as a register channel index — edits to RAM slots
+  8-31 wrote the wrong patch AND the wrong registers. The edit slot
+  now follows the current program (RAM 0-31; ROM programs are
+  read-only until loaded), and `writeVcedGlobal/Operator` write the
+  chip registers for every channel actually sounding the edited
+  patch (side A/B aware) instead of channel == slot.
+- `tests/test_voice_workflow.cpp` — 5 scenarios: edit transmit with
+  real VCED numbers + Sy-Info gate, no-echo on MIDI edits, COMPARE
+  snapshot/restore/reset, setVoiceName + protect, performance
+  capture/apply round-trip.
+
 ### Added (post-0.1.0, manual-comparison pass — hardware SysEx, PEG, op switches, CC)
 - **Hardware-DX21-compatible SysEx** (the previous formats were
   project-internal and did not match the owner's manual):

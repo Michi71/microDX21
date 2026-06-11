@@ -125,9 +125,19 @@ public:
     // action and shows a 2 s "OK / FAILED" status; click in stage 2
     // with NO or click in stage 3 with the same group jumps back
     // to stage 1.
-    void MemoryPickAction(int delta);     // stage 1: rotate Save/Load/Verify
-    void MemoryToggleYesNo();            // stage 2: YES <-> NO
-    void MemoryPickGroup(int delta);      // stage 3: rotate group 0..15
+    // Actions (m_MemoryAction):
+    //   0 Save bank→SD   1 Load bank←SD   2 Verify SD
+    //   3 Store Voice    4 ROM Grp→Bank   5 ROM Voice→Slot
+    //   6 Store Perf
+    // Actions 4 and 5 need a SECOND picker (bank 1-4 / slot 1-32):
+    // stage 2 picks the first value (group/slot/ROM voice), then
+    // MemoryConfirm advances to stage 4 (m_MemorySlot) before
+    // executing. All other actions execute straight from stage 2.
+    static const int kMemoryActionCount = 7;
+    void MemoryPickAction(int delta);     // stage 0: rotate the action
+    void MemoryToggleYesNo();            // stage 1: YES <-> NO
+    void MemoryPickGroup(int delta);      // stage 2: first picker
+    void MemoryPickSlot(int delta);       // stage 4: second picker
     void MemoryConfirm();                // click handler: advance or run
 
     // Result of the most recent MemoryExecute() — shown for ~2 s in
@@ -136,11 +146,35 @@ public:
     void ClearMemoryResult()            { m_MemoryResult = -1; m_MemoryResultMs = 0; MarkDirty(); }
     int  GetMemoryResult() const        { return m_MemoryResult; }
 
-    // Stage inspection (read-only). 0=pick, 1=confirm, 2=group, 3=result-shown.
+    // Stage inspection (read-only). 0=pick, 1=confirm, 2=picker 1,
+    // 3=result-shown, 4=picker 2 (actions 4/5 only).
     int  GetMemoryStage() const         { return m_MemoryStage; }
     int  GetMemoryAction() const        { return m_MemoryAction; }
     int  GetMemoryYesNo() const         { return m_MemoryYesNo; }
     int  GetMemoryGroup() const         { return m_MemoryGroup; }
+    int  GetMemorySlot() const          { return m_MemorySlot; }
+
+    // ───────────────────────────────────────────────
+    // Voice-name editor (FUNCTION "Name :", entry #45)
+    // ───────────────────────────────────────────────
+    //
+    // Entered via TriggerFunctionAction() on the Name entry. While
+    // active, rotation cycles the character under the cursor and a
+    // click advances the cursor; the click on the last position
+    // commits the name through COPMEmuAdapter::SetVoiceName() and
+    // leaves the editor. The input layer routes FUNCTION-mode events
+    // here whenever IsNameEditActive() is true.
+    bool IsNameEditActive() const       { return m_bNameEdit; }
+    void NameEditChangeChar(int delta);
+    bool NameEditClick();               // true when committed/finished
+
+    // ───────────────────────────────────────────────
+    // PERFORMANCE mode
+    // ───────────────────────────────────────────────
+    //
+    // The 32 performance memories. AdjustValue() in PERFORMANCE mode
+    // steps m_PerfSlot and applies the performance via the adapter.
+    int  GetPerfSlot() const            { return m_PerfSlot; }
 
     // ───────────────────────────────────────────────
     // Function-mode action triggers
@@ -326,12 +360,21 @@ private:
     // Memory-mode state machine. Initial values match the legacy
     // "rotation = next param" behaviour: stage=0 (pick), action=0
     // (save), YesNo=0 (NO), group=0 (1).
-    int          m_MemoryStage;     // 0=pick 1=confirm 2=group 3=result
-    int          m_MemoryAction;    // 0=save 1=load 2=verify
+    int          m_MemoryStage;     // 0=pick 1=confirm 2=picker1 3=result 4=picker2
+    int          m_MemoryAction;    // 0..kMemoryActionCount-1 (see above)
     int          m_MemoryYesNo;     // 0=NO 1=YES
-    int          m_MemoryGroup;     // 0..15 (display 1..16)
+    int          m_MemoryGroup;     // first picker value (range per action)
     int          m_MemoryResult;    // -1=none, else 0=OK or error code
     unsigned     m_MemoryResultMs;  // wall-time when result was set
+    int          m_MemorySlot = 0;  // second picker value (actions 4/5)
+
+    // PERFORMANCE-mode slot cursor (0..31).
+    int          m_PerfSlot = 0;
+
+    // Voice-name editor state (FUNCTION #45).
+    bool         m_bNameEdit = false;
+    int          m_NamePos = 0;       // cursor 0..9
+    char         m_NameBuf[11] = {0}; // 10 chars + NUL
 
     // EDIT-mode operator select: 0..3 → OP1..OP4. See GetEditOp().
     int          m_EditOp = 0;

@@ -134,7 +134,12 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
                 if (stage == 0)      m_pDisplay->MemoryPickAction(+1);
                 else if (stage == 1) m_pDisplay->MemoryToggleYesNo();
                 else if (stage == 2) m_pDisplay->MemoryPickGroup(+1);
+                else if (stage == 4) m_pDisplay->MemoryPickSlot(+1);
                 // stage 3 ignores rotation; the timer auto-clears.
+            } else if (m_pDisplay->IsNameEditActive()) {
+                // FUNCTION "Name :" editor: rotation cycles the
+                // character under the cursor.
+                m_pDisplay->NameEditChangeChar(+1);
             } else if (m_bBrowse) {
                 m_pDisplay->SelectParam(+1);
             } else {
@@ -153,6 +158,9 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
                 if (stage == 0)      m_pDisplay->MemoryPickAction(-1);
                 else if (stage == 1) m_pDisplay->MemoryToggleYesNo();
                 else if (stage == 2) m_pDisplay->MemoryPickGroup(-1);
+                else if (stage == 4) m_pDisplay->MemoryPickSlot(-1);
+            } else if (m_pDisplay->IsNameEditActive()) {
+                m_pDisplay->NameEditChangeChar(-1);
             } else if (m_bBrowse) {
                 m_pDisplay->SelectParam(-1);
             } else {
@@ -173,10 +181,17 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
                 m_pDisplay->MemoryConfirm();
                 break;
             }
+            // While the FUNCTION "Name :" editor is active the click
+            // advances the cursor / commits on the last position —
+            // it must NOT cycle the mode.
+            if (m_pDisplay->IsNameEditActive()) {
+                m_pDisplay->NameEditClick();
+                break;
+            }
             // In FUNCTION mode, the click triggers action entries
-            // (Recall / Init / Bulk Transmit) when the user is on a
-            // -1 entry. Otherwise it just cycles to the next mode
-            // (existing behaviour).
+            // (Recall / Init / Bulk Transmit / Name) when the user is
+            // on a -1 entry. Otherwise it just cycles to the next
+            // mode (existing behaviour).
             if (m_pDisplay->GetMode() == DX21UI::kModeFunction) {
                 if (m_pDisplay->TriggerFunctionAction()) {
                     break;
@@ -202,10 +217,23 @@ void CDX21Input::ApplyEvent(CKY040::TEvent ev) {
 
         case CKY040::EventSwitchDoubleClick: {
             // Double-click: COMPARE toggle (only meaningful in
-            // PLAY/EDIT/PERFORMANCE).
+            // PLAY/EDIT/PERFORMANCE). The toggle goes through the
+            // synth so the ORIGINAL (pre-edit) voice becomes audible;
+            // the engine refuses to enter COMPARE when nothing has
+            // been edited yet (like the real DX21).
             Mode mode = m_pDisplay->GetMode();
             if (mode == kModePlay || mode == kModeEdit || mode == kModePerformance) {
-                m_pDisplay->SetCompare(!m_pDisplay->GetCompare());
+                bool want = !m_pDisplay->GetCompare();
+                bool now  = want;
+                if (COPMEmuAdapter* pA = m_pDisplay->GetAdapter()) {
+                    now = pA->setCompare(want);
+                    if (want && !now) {
+                        m_pDisplay->SetStatus("NO EDITS YET");
+                    }
+                }
+                m_pDisplay->SetCompare(now);
+                if (now) m_pDisplay->SetStatus("COMPARE:ORIGINAL");
+                else if (want == now) m_pDisplay->ClearStatus();
             }
             break;
         }

@@ -222,6 +222,30 @@ public:
     void saveEditRecall();
     void loadEditRecall();
 
+    // ───────────────────────────────────────────────
+    // COMPARE (EDIT/COMPARE switch on the original panel)
+    // ───────────────────────────────────────────────
+    //
+    // The first parameter edit after a program change snapshots the
+    // pre-edit voice into an internal compare buffer. setCompare(true)
+    // then makes getPatch() resolve the *current* program to that
+    // snapshot, so held/new notes sound the original voice; false
+    // switches back to the edited data. Like the real DX21, COMPARE
+    // can only be entered after at least one edit. Returns the new
+    // compare state (false if there was nothing to compare).
+    bool setCompare(bool on);
+    bool getCompare() const   { return m_bCompare; }
+    bool isEditDirty() const  { return m_bEditDirty; }
+
+    // Rename the current edit voice (10 chars max, FUNCTION "Name :").
+    // Honours Memory Protect; transmits the name bytes as parameter
+    // changes when "Midi Sy Info" is ON. Returns false if rejected.
+    bool setVoiceName(const char* name);
+
+    // Snapshot the live engine state into a DX21_Performance (used by
+    // the MEMORY-mode "Store Perf" action).
+    void capturePerformance(DX21_Performance& out) const;
+
     // Mod-Wheel / Breath setter accessors. CC#1 / CC#2 are pushed
     // in via processMidiBuffer(), so these are mostly for testing
     // and for the UI encoder (which can simulate a wheel value).
@@ -522,9 +546,33 @@ private:
     void applySysexChanges();
     void applySysexParam(int paramIndex, uint8_t value);
 
-    // VCED byte index → OPM register mapping helpers
-    void writeVcedGlobal(int param, uint8_t value);
-    void writeVcedOperator(int op, int param, uint8_t value);
+    // VCED byte index → OPM register mapping helpers. `transmit`
+    // controls the real-time parameter-change SysEx out (panel edits
+    // transmit, incoming MIDI edits must NOT echo back).
+    void writeVcedGlobal(int param, uint8_t value, bool transmit = true);
+    void writeVcedOperator(int op, int param, uint8_t value, bool transmit = true);
+
+    // Re-apply the edited patch to every chip voice currently
+    // sounding it (side A and/or B). Used after edits that touch a
+    // RAM slot > chip-channel range and by COMPARE switching.
+    void reapplyEditPatch(int slot);
+
+    // Transmit a real-time parameter change (F0 43 1n 12 pp vv F7)
+    // through the SysEx-out callback when "Midi Sy Info" is ON.
+    void transmitParamChange(int vcedParam, uint8_t value);
+
+    // First-edit hook: snapshot the pre-edit patch for COMPARE.
+    void markEditDirty(const DX21_Patch* current) {
+        if (!m_bEditDirty && current) {
+            m_compareBuffer = *current;
+            m_bEditDirty = true;
+        }
+    }
+
+    // --- COMPARE state ---
+    DX21_Patch m_compareBuffer;       // pre-edit snapshot
+    bool       m_bCompare = false;    // true: getPatch serves the snapshot
+    bool       m_bEditDirty = false;  // true after first edit since PC
 
     // --- Thread-safe program change ---
     // setCurrentProgram() stores the new program number here (main thread).
