@@ -2,7 +2,7 @@
 
 A real-time FM synthesizer that runs the original **Yamaha DX21** voice/play engine on bare-metal **Raspberry Pi 3/4/5** (Circle stdlib, no Linux) and on **macOS/PC** for development. The synth core is the C-port of **Nuked OPM** (YM2164/OPP mode), giving a cycle-accurate YM2151-compatible FM engine with the DX21's voice architecture.
 
-> **Status**: Synth engine, MIDI, SysEx, and play modes are stable. The UI is a minimal 128×32 SSD1305/SH1106 OLED + KY-040 rotary encoder; on-device parameter editing follows the original DX21's mode structure.
+> **Status**: Feature-complete against the original DX21 owner's manual — synth engine, play modes (incl. 7+1 SPLIT mixing), hardware-compatible SysEx (byte-exact VMEM), full CC set, active sensing, COMPARE/STORE/EG-COPY workflows. The UI is a minimal 128×32 SSD1305/SH1106 OLED + KY-040 rotary encoder; on-device editing follows the original DX21's mode structure. Cassette functions are replaced by SD card.
 
 ---
 
@@ -14,16 +14,19 @@ A real-time FM synthesizer that runs the original **Yamaha DX21** voice/play eng
 - **Phase-reset disabled** for click-free KeyOn (the standard Nuked OPM `pg_phase=0` reset causes audible click on polyphonic note transitions; the OPP TL-ramp bit-7 of reg 0x60 covers the fade-in).
 - **DAC mix-div / kScale** — gives 12 dB of headroom before the YM2151's 10-bit DAC, prevents hard clipping with 8 active voices at full output.
 - **Lock-free SPSC MIDI ring buffer** between MIDI thread and audio ISR; SysEx goes through a deferred queue.
-- **DX21-compatible SysEx real-time parameter change** (`F0 43 0n 12 pp vv F7`) for live editing of any VCED byte.
-- **32-voice VCED bulk dump** import/export.
+- **Hardware-DX21-compatible SysEx**: real-time parameter change (`F0 43 1n 12 pp vv F7`, VCED numbering 0–93), 1-voice VCED dump (format 0x03, 93 bytes), 32-voice VMEM bulk dump (format 0x04, 4096 bytes, two's-complement checksum) and dump requests (f=3/f=4). Exports are **byte-identical to real hardware dumps**, verified against the four DX21 factory banks (incl. the undocumented constant `0x01` at padding offset 91 of every voice record). Legacy project formats remain receive-only.
+- **Edit transmit**: panel edits send real-time parameter changes when "Midi Sy Info" is ON; incoming MIDI edits never echo back.
+- **Pitch EG** (PR1–3/PL1–3, firmware-side like the original) and **operator ON/OFF** (SysEx param 93).
+- **Audible COMPARE**, **Edit Recall**, **Init Voice**, **EG COPY** (copy AR/D1R/D1L/D2R/RR between operators) and **Memory Protect** gating all write paths.
 - **3-line modulated stereo ensemble/chorus** with 0.5 Hz + 3 Hz dual LFO, 120° phase offsets.
-- **10 kHz Butterworth biquad** reconstruction filter on the DAC output.
-- **Real-time pitch bend** via per-voice KC/KF updates, **portamento** via per-sample pitch interpolation, **breath controller** (CC#2), **mod wheel** (CC#1), **sustain** (CC#64).
+- **4th-order Butterworth (7.5 kHz, two cascaded biquads)** reconstruction filter on the DAC output, plus DC blocker.
+- **Real-time pitch bend** via per-voice KC/KF updates, **portamento** via per-sample pitch interpolation, **full DX21 CC set**: mod wheel (1), breath (2), porta time (5), foot volume (7), sustain (64), porta switch (65), all notes off (123), mono/poly (126/127).
+- **Active-Sensing watchdog** (0xFE): 300 ms without MIDI data → All Notes Off, disarmed until the next 0xFE (manual 4-1-3).
 
 ### Play modes
-- **SINGLE** — 8-voice polyphony, 1 patch
-- **DUAL** — 4+4 voices, A/B balance
-- **SPLIT** — 4+4 voices left/right of split point
+- **SINGLE** — 8-voice polyphony, 1 patch (MONO: 1 voice, last-note priority)
+- **DUAL** — 4+4 voices, A/B balance, dual detune
+- **SPLIT** — left/right of split point with **MONO+POLY mixing** like the original: poly/mono follows each side's patch (VCED 63), so the layouts are 4+4, **7+1**, 1+7 or 1+1 — a MONO side gets 1 voice, the POLY partner the remaining 7
 - **MONO** — last-note-priority, legato, per side in SPLIT
 
 ### 32 Performance memories
@@ -92,10 +95,11 @@ A minimal 128×32 SSD1305/SH1106 OLED + a single KY-040 rotary encoder. The disp
 
 - **CDX21Display** (`src/display/display_dx21.{h,cpp}`) wraps `CSSD1305SPIDisplay` from `libdisplay2` and renders 5 modes (PLAY, EDIT, PERFORMANCE, FUNCTION, MEMORY) + a COMPARE overlay. Mode title on top row, 7-segment-style large value (8×16) in the middle, parameter name and status on the bottom two rows.
 - **CDX21Input** (`src/display/dx21_input.{h,cpp}`) wraps the Circle sensor-addon's `CKY040` (ISR-driven, with switch debounce, single/double/triple-click, hold detection). The mapping:
-  - rotate CW/CCW → next/prev parameter
-  - single click → cycle mode (PLAY → EDIT → PERFORM → FUNCTION → MEMORY → PLAY)
-  - double click → COMPARE toggle
-  - long press → memory-protect toggle
+  - rotate CW/CCW → next/prev parameter (browse) or value ±1 (edit); first hold-tick toggles browse/edit
+  - single click → cycle mode (PLAY → EDIT → PERFORM → FUNCTION → MEMORY → PLAY); on FUNCTION/EDIT action entries (Recall, Init Voice, Bulk Transmit, Name, **EG Copy**) the click triggers the action instead
+  - double click → COMPARE toggle (audible: pre-edit voice)
+  - triple click (EDIT) → cycle the target operator OP1→OP4
+  - long press → browse/edit toggle (1 s), memory-protect toggle (2 s)
 - **Strings** are extracted from the original ROM V1.5 firmware (`src/opm/firmware/dx21_rom_v1_5.asm`): 36 EDIT-mode parameter labels, 46 FUNCTION-mode menu items, 6 PLAY labels, ON/OFF, note names, tape-dialog labels, MIDI status. All in `src/opm/dx21_ui_strings.h`.
 - **7-segment font** (8×16, hand-coded segment-mask composition) in `src/opm/dx21_ui_7seg.h` evokes the original DX21's 7-segment LED look.
 
@@ -112,7 +116,16 @@ mkdir -p build && cd build
 cmake ..
 make
 ./standalone
+
+# Unit tests (engine-only, no SDL/PortMidi needed at runtime):
+ctest            # voice stealing, portamento, memory protect, sysex dump,
+                 # voice workflow, velocity curve, split/EG-copy,
+                 # active sensing, VMEM roundtrip
 ```
+
+> `test_vmem_roundtrip` verifies the VMEM bit packing byte-exactly
+> against real DX21 factory banks in `doc/SYX/` (local-only, not in
+> the repo — like the firmware ROM). It skips cleanly when absent.
 
 Controls (in `standalone`):
 | Key | Action |
@@ -324,7 +337,8 @@ The original DX21 firmware (`src/opm/firmware/dx21_rom_v1_5.asm`, 14 600 lines o
 ## MIDI implementation notes
 
 - **Channel filter** — `CMicroDX21::ShouldAcceptChannel()` filters channel-voice messages (notes, CC, PC, pitch bend) by the configured `MIDIChannel`. SysEx and system real-time (clock, start/stop/continue) always pass.
-- **SysEx** is queued in a 2-slot buffer (up to 64 KB each) and processed in `ProcessDeferredSysEx()`. Real-time parameter change and bulk dump both supported.
+- **SysEx** is queued in a 2-slot buffer (up to 64 KB each) and processed in `ProcessDeferredSysEx()`. Real-time parameter change, 1-voice VCED, 32-voice VMEM bulk and dump requests supported (hardware formats; legacy project formats receive-only).
+- **Active Sensing** (0xFE) arms a 300 ms watchdog; on timeout the engine performs All Notes Off and disarms until the next 0xFE.
 - **Soft-thru** is unfiltered (forwards everything received on USB-MIDI to USB-MIDI out, useful for DAW setups).
 - **Program Change** loads a patch into voice A; PC is not delayed.
 - **Channel pressure / Poly aftertouch** are received but currently ignored (DX21 has no aftertouch).
@@ -392,4 +406,8 @@ LGPL compliance: when distributing binaries, either link Nuked OPM dynamically o
 - [x] **USB-MIDI Gadget (removed)** — formerly a `CUSBMIDIGadget` branch in the kernel. Replaced by an external RP2350 "Comms" processor (pico-midi-adapter) that bridges USB-MIDI to UART RX/TX on GPIO 14/15. See `pico-midi-adapter/` for the firmware.
 - [x] **DX21 FUNCTION-mode coverage (A2/A5/A6/A7/A8/A9/A10/B8/B9)** — A2 Dual Detune, A5 Transmit Ch, A6 CH Info, A7 Sys Info, A8 Bulk Transmit, A9 Edit Recall (snapshot via `m_editRecall`), A10 Init Voice (defaults to a single-carrier short-decay bell). B8 MW Pitch Range + B9 MW Amp Range now scale the CC#1 handler. UI action triggers via `CDX21Display::TriggerFunctionAction()` on click at `-1` entries.
 - [x] **Panic / safe shutdown** — `CKernel::PanicHandler()` now: enables IRQs → calls `CMicroDX21::Panic()` (which runs `COPMEmu::resetEngine()` = KeyOff on all 8 channels + force every operator's TL to 127 + drop the MIDI/SysEx queues, then `CSoundBaseDevice::Cancel()` to stop the DMA) → calls `CDX21Display::Off()` → sets `m_bRunning = false` → parks in `wfi`. After this, the OPM is silent within one DMA buffer (~10 ms @ 48 kHz) and the OLED's charge pump is off. The graceful Run() exit also runs the same teardown so a future user-initiated shutdown gets it for free.
+- [x] **Hardware SysEx + engine gaps (manual pass I)** — real DX21 VCED-93/VMEM-4096 formats with two's-complement checksum and dump requests, Pitch EG, operator ON/OFF, the full DX21 CC set (5/7/65/123/126/127 added).
+- [x] **Voice workflows (manual pass II)** — audible COMPARE, edit transmit (no echo on MIDI-in edits), MEMORY mode with 7 actions (STORE voice, A11/A12 ROM load, Store Perf, SD save/load/verify), operable PERFORMANCE mode, voice-name editor, edit-slot fix.
+- [x] **Final manual nits (pass III)** — SPLIT MONO+POLY mixing (7+1 / 1+7 / 1+1 layouts with dynamic voice ranges), EG COPY utility (EDIT entries 33/34), Active-Sensing 300 ms watchdog, VMEM packing verified **byte-exact** against real factory bank dumps (incl. undocumented pad byte 91 = 0x01). **No manual-comparison gaps remain.**
+- [x] **Unit-test suite** — 9 engine tests via CTest: voice stealing, portamento, memory protect, sysex dump, voice workflow, velocity curve, split/EG-copy, active sensing, VMEM roundtrip against real banks.
 
