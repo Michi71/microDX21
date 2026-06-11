@@ -19,8 +19,6 @@
 class CConfig
 {
 public:
-    static const unsigned MaxNotes     = 88;  // hardware cap (YMF2164 OP chips)
-    static const unsigned DefaultNotes = 64;  // safe default for a Pi 3
     static const unsigned MaxChunkSize = 4096;
 
 public:
@@ -32,7 +30,6 @@ public:
     // ───────────────────────────────────────────────
     // ENGINE / AUDIO
     // ───────────────────────────────────────────────
-    unsigned    GetPolyphony() const;
     const char* GetSoundDevice() const;      // "pwm" or "i2s"
     unsigned    GetSampleRate() const;
     unsigned    GetChunkSize() const;
@@ -64,7 +61,6 @@ private:
     CPropertiesFatFsFile m_Properties;
 
     // Engine / Audio
-    unsigned    m_nPolyphony;
     std::string m_SoundDevice;
     unsigned    m_nSampleRate;
     unsigned    m_nChunkSize;

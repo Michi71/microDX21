@@ -86,20 +86,6 @@ void CConfig::Load()
     // ───────────────────────────────────────────────
     m_nMasterVolume = m_Properties.GetNumber("MasterVolume", 100);
 
-    // ───────────────────────────────────────────────
-    // Polyphony
-    //
-    // MaxNotes is the absolute hardware/algorithm cap. Any INI value
-    // above MaxNotes is clamped down to MaxNotes — we don't fall back
-    // to the default, because a user who wrote "Polyphony=128" most
-    // likely wants "as many voices as possible", not the conservative
-    // default. Sub-1 values are nonsensical; clamp to 1.
-    // ───────────────────────────────────────────────
-    m_nPolyphony = m_Properties.GetNumber("Polyphony", DefaultNotes);
-    if (m_nPolyphony > MaxNotes)
-        m_nPolyphony = MaxNotes;
-    if (m_nPolyphony < 1)
-        m_nPolyphony = 1;
 
     // ───────────────────────────────────────────────
     // DISPLAY
@@ -149,7 +135,6 @@ void CConfig::Load()
 // Getter
 // ───────────────────────────────────────────────────────────────────────
 
-unsigned CConfig::GetPolyphony() const { return m_nPolyphony; }
 
 const char* CConfig::GetSoundDevice() const { return m_SoundDevice.c_str(); }
 

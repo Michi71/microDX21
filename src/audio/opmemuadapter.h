@@ -201,15 +201,14 @@ static_assert(kParamOp1D2R == kParamOp0D2R + 8 &&
 class COPMEmuAdapter
 {
 public:
-    COPMEmuAdapter(float sampleRate, int maxPolyphony)
+    COPMEmuAdapter(float sampleRate)
     : m_synth(nullptr)
     , m_sampleRate(sampleRate)
-    , m_maxPolyphony(maxPolyphony)
     , m_currentProgram(0)
     , m_pFS(nullptr)
     {
         // COPMEmu is allocated in init() after filesystem is set.
-        // maxPolyphony for DX21 FM is fixed at 8 voices (hardware limit).
+        // DX21 FM is fixed at 8 voices (hardware limit) — see kNumVoices.
     }
 
     ~COPMEmuAdapter()
@@ -1093,7 +1092,6 @@ public:
 private:
     COPMEmu*        m_synth;
     float           m_sampleRate;
-    int             m_maxPolyphony;
     int             m_currentProgram;
     IFileSystem*    m_pFS;
     PresetInfo      m_cachedPreset;   // single cached entry for getPreset()

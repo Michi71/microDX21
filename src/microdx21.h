@@ -133,7 +133,6 @@ public:
     const char*       GetAudioBackendName() const;
     const char*       GetAudioDeviceName() const;
     unsigned          GetSampleRate() const;
-    unsigned          GetPolyphony() const;
     unsigned          GetChunkSize() const;
     bool              IsStereoSwapped() const;
     const char*       GetFirmwareVersion() const;
@@ -211,7 +210,6 @@ private:
     COPMEmuAdapter   m_piano;
     IFileSystem*      m_pCircleFS;
     float             m_sampleRate;
-    int               m_maxPolyphony;
 
     // Audio
     CSoundBaseDevice* m_pSoundDevice;

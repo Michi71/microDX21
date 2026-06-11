@@ -40,10 +40,10 @@ CMicroDX21::CMicroDX21(CConfig*          pConfig,
 , m_pI2CMaster(pI2CMaster)
 , m_pSPIMaster(pSPIMaster)
 , m_pFileSystem(pFileSystem)
-, m_piano(pConfig->GetSampleRate(), pConfig->GetPolyphony())
+, m_piano(pConfig->GetSampleRate())
 , m_pCircleFS(nullptr)
 , m_sampleRate(pConfig->GetSampleRate())
-, m_maxPolyphony(pConfig->GetPolyphony())
+
 , m_pSoundDevice(nullptr)
 , m_queueFrames(pConfig->GetChunkSize() / 2)
 , m_bChannelsSwapped(pConfig->GetChannelsSwapped())
@@ -740,11 +740,6 @@ const char* CMicroDX21::GetAudioDeviceName() const
 unsigned CMicroDX21::GetSampleRate() const
 {
     return m_sampleRate;
-}
-
-unsigned CMicroDX21::GetPolyphony() const
-{
-    return m_maxPolyphony;
 }
 
 unsigned CMicroDX21::GetChunkSize() const
